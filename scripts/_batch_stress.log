@@ -16,7 +16,7 @@ reference measured
 base render captured: 320x240
 analyze: kept=['cam.iso', 'light.multiplier'] withheld=['sun.intensity_mult']
 recipe applied to scene: ['cam.iso', 'light.multiplier']
-attempt scored: look=89.06 match=11% moves=['cam.iso']
+attempt scored: look=100.00 match=0% moves=['cam.iso']
 E2E loop complete (2 stubbed model rounds, 2 real renders, 1 real apply)
 census: 2 lights · 1 sun · 1 cam · 1 warning | codes=['GAMMA_OFF']
 named apply: {'applied': ['light.multiplier'], 'failed': [], 'manual': [], 'verified': ['light.multiplier'], 'unverified': []}

@@ -62,6 +62,7 @@ def run_autopilot(
     worsen_streak = 0
     stop_reason = "budget"
     final_score: Optional[float] = None
+    error_message: Optional[str] = None
 
     def emit(row: dict) -> None:
         rows.append(row)
@@ -124,11 +125,19 @@ def run_autopilot(
             })
     except Exception as e:  # any seam blew up — abort cleanly, keep the partial log
         stop_reason = f"error:{type(e).__name__}"
+        error_message = str(e) or type(e).__name__
+
+    # best (max) match across rounds — NOT the last round's, which can be lower after an
+    # oscillation/budget stop (the last score may be the worst one measured).
+    round_pcts = [r["match_percent"] for r in rows if isinstance(r.get("match_percent"), int)]
+    best_match_percent = max(round_pcts) if round_pcts else None
 
     return {
         "rounds": rows,
         "final_score": final_score,
         "final_match_percent": match_percent(final_score) if final_score is not None else None,
+        "best_match_percent": best_match_percent,
         "matched": stop_reason == "matched",
         "stop_reason": stop_reason,
+        "error_message": error_message,
     }

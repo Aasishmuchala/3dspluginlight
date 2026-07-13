@@ -53,7 +53,8 @@ class Worker(QtCore.QObject):
 
 
 class LightMatchDock(QtWidgets.QWidget):
-    apRow = QtCore.Signal(dict)  # autopilot per-round progress (worker → GUI thread)
+    apRow = QtCore.Signal(dict)       # autopilot per-round progress (worker → GUI thread)
+    _mainCall = QtCore.Signal(object)  # marshal a pymxs call onto the GUI/main thread
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,8 +66,38 @@ class LightMatchDock(QtWidgets.QWidget):
         self._threads: list[QtCore.QThread] = []
         self._workers: list[QtCore.QObject] = []
         self._ap_cancel = False
+        self._ap_running = False
+        self._has_recipe = False
         self._build()
         self.apRow.connect(self._ap_row)
+        self._mainCall.connect(self._exec_main_call)
+        self._update_buttons(busy=False)
+
+    # -- main-thread marshalling: 3ds Max / pymxs is MAIN-THREAD-ONLY, so every scene
+    # read or mutation must run on the GUI thread. Worker threads (which carry the slow
+    # network round) call _run_on_main(fn) to hop a single pymxs op onto the main thread
+    # and block until it returns. Running pymxs on a worker QThread can hard-crash Max —
+    # this is the guard that keeps scene access on the main thread while the gateway call
+    # stays off it (found in the 2026-07-13 review; batch tests never hit it because
+    # 3dsmaxbatch is single-threaded).
+    @QtCore.Slot(object)
+    def _exec_main_call(self, call):
+        try:
+            call["result"] = call["fn"]()
+        except Exception as e:  # noqa: BLE001 — ferried back to the worker
+            call["error"] = e
+        finally:
+            call["event"].set()
+
+    def _run_on_main(self, fn):
+        if QtCore.QThread.currentThread() is self.thread():
+            return fn()  # already on the main thread
+        call = {"fn": fn, "event": threading.Event(), "result": None, "error": None}
+        self._mainCall.emit(call)  # queued → runs in _exec_main_call on the main thread
+        call["event"].wait()
+        if call["error"] is not None:
+            raise call["error"]
+        return call["result"]
 
     # -- UI scaffold -------------------------------------------------------------
     def _build(self):
@@ -202,11 +233,33 @@ class LightMatchDock(QtWidgets.QWidget):
     def _context(self) -> dict[str, str]:
         return {"scene": self.scene_box.currentText(), "time": self.time_box.currentText(), "rig": self.rig_box.currentText()}
 
+    def _update_buttons(self, busy: bool):
+        # Reference + Analyze are always usable (Analyze guards on inputs/key itself).
+        self.ref_btn.setEnabled(not busy)
+        self.analyze_btn.setEnabled(not busy)
+        # Scene I/O needs Max.
+        for b in (self.grab_btn, self.render_btn):
+            b.setEnabled(not busy and IN_MAX)
+        # Apply / Check / Autopilot need Max AND a recipe on the table — disabled on
+        # first open so the artist is guided to Analyze first, not into a dead-end.
+        for b in (self.apply_btn, self.check_btn, self.autopilot_btn):
+            b.setEnabled(not busy and IN_MAX and self._has_recipe)
+        # Stop is only live while autopilot is running.
+        self.cancel_btn.setEnabled(self._ap_running)
+
     def _busy(self, on: bool, note: str = ""):
-        for b in (self.analyze_btn, self.apply_btn, self.check_btn, self.grab_btn,
-                  self.render_btn, self.ref_btn, self.autopilot_btn):
-            b.setEnabled(not on and (IN_MAX or b in (self.analyze_btn, self.ref_btn)))
-        self.status.setText(note)
+        self._update_buttons(busy=on)
+        if note:
+            self.status.setText(note)
+
+    def _need_key(self) -> bool:
+        """Guard: no key → clear, actionable message + focus, and DON'T spawn a worker
+        that only fails at the gateway. Returns True if blocked."""
+        if not self.key_edit.text().strip():
+            self.status.setText("Paste your oc_ omega key in the field at the top, then Analyze.")
+            self.key_edit.setFocus()
+            return True
+        return False
 
     def _spawn(self, fn, on_done):
         # Worker runs fn() on its own QThread; results come back via signals connected
@@ -225,6 +278,7 @@ class LightMatchDock(QtWidgets.QWidget):
         # the instant _spawn returns (before its thread runs `started → run`), so the job
         # silently never fires. Cleared in _worker_done/_worker_fail.
         wk._th = th
+        th.finished.connect(lambda t=th: self._threads.remove(t) if t in self._threads else None)
         self._threads.append(th)
         self._workers.append(wk)
         th.start()
@@ -243,6 +297,7 @@ class LightMatchDock(QtWidgets.QWidget):
     def _worker_fail(self, msg):
         wk = self.sender()
         wk.thread_ref.quit()
+        self._ap_running = False  # any in-flight autopilot is over
         self._busy(False, msg)
         if wk in self._workers:
             self._workers.remove(wk)
@@ -252,26 +307,35 @@ class LightMatchDock(QtWidgets.QWidget):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Reference image", "", "Images (*.png *.jpg *.jpeg *.webp)")
         if not path:
             return
-        from PIL import Image
-        self.session["ref"] = sess.capture(Image.open(path))
-        sess.save(self.session)
+        try:
+            from PIL import Image
+            self.session["ref"] = sess.capture(Image.open(path))
+            sess.save(self.session)
+        except Exception as e:
+            self.status.setText(f"Couldn't read that image: {e}")
+            return
         self._io_note()
 
     def _grab(self, base: bool):
         try:
             img = maxvfb.grab_vfb()
+            self.base_capture = sess.capture(img)  # capture can also fail on a bad frame
         except Exception as e:
             self.status.setText(str(e))
             return
-        self.base_capture = sess.capture(img)
         self._io_note()
 
     def _render(self, base: bool):
+        # Render on the MAIN thread — pymxs is main-thread-only. This blocks the UI for
+        # the render (normal for Max); processEvents lets the status paint first.
         self._busy(True, "Rendering…")
-        self._spawn(lambda: maxvfb.render_view(), self._render_done)
-
-    def _render_done(self, img):
-        self.base_capture = sess.capture(img)
+        QtWidgets.QApplication.processEvents()
+        try:
+            img = maxvfb.render_view()
+            self.base_capture = sess.capture(img)
+        except Exception as e:
+            self._busy(False, str(e))
+            return
         self._busy(False, "")
         self._io_note()
 
@@ -313,6 +377,8 @@ class LightMatchDock(QtWidgets.QWidget):
         if not self.session.get("ref") or not self.base_capture:
             self.status.setText("Load a reference and grab a render first.")
             return
+        if self._need_key():
+            return
         key = self.key_edit.text().strip()
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
@@ -324,6 +390,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.session["_census_text"] = census_text  # reused each Check/Autopilot round
         self.session["_renderer"] = renderer
         ref, base, ctx = self.session["ref"], self.base_capture, self._context()
+        # engine.analyze does NO pymxs (evidence + gateway + validate) — safe on a worker.
         self._busy(True, "Reading the light…")
         self._spawn(
             lambda: engine.analyze(key, model, TARGET, ref, base, ctx, lock, live, renderer,
@@ -334,9 +401,19 @@ class LightMatchDock(QtWidgets.QWidget):
     def _analyze_done(self, recipe: dict):
         self.session["recipe"] = recipe
         sess.save(self.session)
-        self._busy(False, "Recipe ready — check the rows you'll take, then Apply.")
-        self._fill_table(recipe.get("values", []), val_key="set")
+        values = recipe.get("values", [])
         withheld = recipe.get("withheld_globals") or []
+        self._fill_table(values, val_key="set")
+        if not values:
+            # valid JSON, zero applicable controls — not a silent green dead-end.
+            self._has_recipe = False
+            note = "The model proposed no applicable moves"
+            if withheld:
+                note += " (all its moves were scene-globals, withheld by the lock)"
+            self._busy(False, note + " — try Analyze again, or set the scene context.")
+        else:
+            self._has_recipe = True
+            self._busy(False, "Recipe ready — untick anything you don't want, then Apply.")
         self.withheld_label.setText(
             f"{len(withheld)} scene-global move(s) withheld — globals locked: "
             + " · ".join(f"{w['param']} → {w['set']}" for w in withheld)
@@ -395,6 +472,8 @@ class LightMatchDock(QtWidgets.QWidget):
         if not self.session.get("ref"):
             self.status.setText("Load a reference first.")
             return
+        if self._need_key():
+            return
         key = self.key_edit.text().strip()
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
@@ -402,38 +481,39 @@ class LightMatchDock(QtWidgets.QWidget):
         ref = self.session["ref"]
         n = int(self.session.get("attempt_count", 0)) + 1
         history = sess.history_rounds(self.session)
-        live = None
-        renderer = ""
+        # Pull + render on the MAIN thread (pymxs). Render FRESH — you just applied the
+        # recipe, so the scene changed; grabbing the old VFB would score the pre-apply
+        # frame and make Apply look like it did nothing (found 2026-07-13).
+        live, renderer = None, ""
         try:
             pulled = maxscene.pull_settings()
             live, renderer = pulled["params"], pulled["renderer"]
         except Exception:
             pass
+        self._busy(True, f"Rendering attempt {n}…")
+        QtWidgets.QApplication.processEvents()
+        try:
+            img = maxvfb.render_view()  # fresh — Apply changed the scene
+            attempt = sess.capture(img)
+        except Exception as e:
+            self._busy(False, f"Render failed: {e}")
+            return
 
         census_text = self.session.get("_census_text")
-
-        def job():
-            # Ease-of-use: the artist has usually JUST rendered in the VFB — grab that
-            # frame rather than forcing a second render; fall back to a fresh render
-            # only when the VFB is empty/unavailable.
-            try:
-                img = maxvfb.grab_vfb()
-            except Exception:
-                img = maxvfb.render_view()
-            attempt = sess.capture(img)
-            score, correction = engine.add_attempt(
-                key, model, TARGET, ref, attempt, n, history, ctx, lock, live, renderer,
-                census_text=census_text,
-            )
-            return score, correction
-
-        self._busy(True, f"Checking attempt {n} (grabbing the VFB, rendering if empty)…")
-        self._spawn(job, self._check_done)
+        # Only the gateway round runs on the worker (no pymxs here).
+        self._busy(True, f"Checking attempt {n}…")
+        self._spawn(
+            lambda: engine.add_attempt(key, model, TARGET, ref, attempt, n, history, ctx,
+                                       lock, live, renderer, census_text=census_text),
+            self._check_done,
+        )
 
     # -- AUTOPILOT: run the whole refine loop unattended -----------------------------
     def _autopilot(self):
-        if not self.session.get("recipe"):
-            self.status.setText("Analyze and apply a recipe first, then Autopilot refines it.")
+        if not self.session.get("recipe") or not self._has_recipe:
+            self.status.setText("Analyze first — Autopilot then refines the recipe for you.")
+            return
+        if self._need_key():
             return
         key = self.key_edit.text().strip()
         model = self.model_box.currentText()
@@ -444,18 +524,22 @@ class LightMatchDock(QtWidgets.QWidget):
         renderer = self.session.get("_renderer", "")
         rounds = int(self.rounds_spin.value())
         self._ap_cancel = False
+        self._ap_running = True
 
+        # run_autopilot runs on a worker (the gateway rounds must stay off the GUI
+        # thread), but EVERY pymxs op is marshalled onto the main thread via _run_on_main
+        # — pymxs is main-thread-only.
         def render_cb():
-            return sess.capture(maxvfb.render_view())
+            return self._run_on_main(lambda: sess.capture(maxvfb.render_view()))
 
         def correct_cb(cap, n):
             live = None
             try:
-                live = maxscene.pull_settings()["params"]
+                live = self._run_on_main(lambda: maxscene.pull_settings()["params"])
             except Exception:
                 pass
             attempt_n = int(self.session.get("attempt_count", 0)) + 1
-            score, corr = engine.add_attempt(
+            score, corr = engine.add_attempt(  # network — stays on the worker
                 key, model, TARGET, ref, cap, attempt_n, sess.history_rounds(self.session),
                 ctx, lock, live, renderer, census_text=census_text,
             )
@@ -463,9 +547,10 @@ class LightMatchDock(QtWidgets.QWidget):
             return score, corr
 
         def apply_cb(moves):
-            return maxscene.apply_values(moves)
+            return self._run_on_main(lambda: maxscene.apply_values(moves))
 
         self._busy(True, f"Autopilot: up to {rounds} rounds…")
+        self._update_buttons(busy=True)  # enables Stop (via _ap_running)
         self._spawn(
             lambda: autopilot.run_autopilot(
                 rounds=rounds, render_cb=render_cb, correct_cb=correct_cb, apply_cb=apply_cb,
@@ -483,21 +568,27 @@ class LightMatchDock(QtWidgets.QWidget):
         )
 
     def _autopilot_done(self, result: dict):
+        self._ap_running = False
         sess.save(self.session)
-        pct = result.get("final_match_percent")
+        best = result.get("best_match_percent")
         reason = result.get("stop_reason", "")
-        msg = {
-            "matched": "MATCHED — stop lighting, move to grading.",
-            "budget": "round budget reached.",
-            "oscillating": "stopped — the score was not settling.",
-            "no_moves": "no further moves proposed.",
-            "cancelled": "cancelled.",
-        }.get(reason, reason)
-        self._busy(False, f"Autopilot done ({len(result.get('rounds', []))} rounds, {pct}% best): {msg}")
-        if pct is not None:
+        if reason.startswith("error:"):
+            msg = "error — " + (result.get("error_message") or reason.split(":", 1)[-1])
+        else:
+            msg = {
+                "matched": "MATCHED — stop lighting, move to grading.",
+                "budget": "round budget reached.",
+                "oscillating": "stopped — the score was not settling.",
+                "no_moves": "no further moves proposed.",
+                "cancelled": "cancelled.",
+            }.get(reason, reason)
+        nr = len(result.get("rounds", []))
+        best_txt = f"{best}% best" if best is not None else "no score"
+        self._busy(False, f"Autopilot done ({nr} round{'s' if nr != 1 else ''}, {best_txt}): {msg}")
+        if best is not None:
             matched = result.get("matched")
             self.score_label.setText(
-                (f"{pct}% — LIGHTING MATCHED" if matched else f"{pct}% match") + f" · autopilot: {msg}"
+                (f"{best}% — LIGHTING MATCHED" if matched else f"{best}% best match") + f" · {msg}"
             )
             self.score_label.setStyleSheet("color:#2e8f5b;" if matched else f"color:{AMBER};")
 
@@ -506,14 +597,21 @@ class LightMatchDock(QtWidgets.QWidget):
         sess.push_attempt(self.session, score, correction)
         sess.save(self.session)
         pct = match_percent(score)
+        moves = correction.get("moves", [])
+        self._fill_table(moves, val_key="to")
         if engine.matched(score):
             self.score_label.setText(f"{pct}% — LIGHTING MATCHED · stop lighting, move to grading")
             self.score_label.setStyleSheet("color:#2e8f5b;")
+            self._has_recipe = bool(moves)
+            self._busy(False, "Matched. If you want to keep going, apply any remaining moves and Check again.")
+        elif not moves:
+            self._has_recipe = False
+            self._busy(False, f"{pct}% match, but the model proposed no further moves — try Check again.")
         else:
             self.score_label.setText(f"{pct}% match · look distance {score:.1f}")
             self.score_label.setStyleSheet(f"color:{AMBER};")
-        self._busy(False, correction.get("status_reason", ""))
-        self._fill_table(correction.get("moves", []), val_key="to")
+            self._has_recipe = True
+            self._busy(False, correction.get("status_reason", "Apply the moves, then Check again."))
         withheld = correction.get("withheld_globals") or []
         self.withheld_label.setText(
             f"{len(withheld)} scene-global move(s) withheld — globals locked."

@@ -138,7 +138,7 @@ def validate_items(target: str, cleaned: dict, mode: str) -> dict:
     items = cleaned.get(key)
     if not isinstance(items, list):
         raise ValueError(f"model reply is missing an array `{key}`")
-    seen: set[str] = set()
+    seen: set = set()
     out: list[dict] = []
     for it in items:
         if not isinstance(it, dict):
@@ -146,9 +146,15 @@ def validate_items(target: str, cleaned: dict, mode: str) -> dict:
         param = it.get("param")
         if not isinstance(param, str) or data.lookup(target, param) is None:
             continue  # unknown control — never let an invented knob through
-        if param in seen:
-            continue  # one value per control; first occurrence wins
-        seen.add(param)
+        # Dedupe on (control, fixture): one value per control PER NODE. The scene census
+        # invites the model to emit the same param for different named fixtures
+        # (light.multiplier on Kitchen_Fill AND on Living_Key); keying on the bare param
+        # would silently drop every per-fixture move after the first (found 2026-07-13).
+        node = it.get("node") if isinstance(it.get("node"), str) and it.get("node") else None
+        nkey = (param, node)
+        if nkey in seen:
+            continue
+        seen.add(nkey)
         v = it.get(val_key)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             if not math.isfinite(float(v)):

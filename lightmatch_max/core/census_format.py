@@ -45,10 +45,11 @@ def census_warnings(census: dict) -> list[dict]:
     lights = c.get("lights") or []
     lights_on = [l for l in lights if l.get("on") is not False]
     suns_on = [s for s in suns if s.get("on") is not False]
-    if not suns and not lights_on:
+    if not suns_on and not lights_on:
+        # NOTE: test on suns_ON (a scene whose only sun is DISABLED has nothing to move).
         warns.append({
             "code": "NO_SUN_NO_LIGHTS", "severity": "warn",
-            "message": "No sun and no lights are on — there is nothing for the recipe to move. Add a light or a VRaySun.",
+            "message": "No enabled sun and no lights are on — there is nothing for the recipe to move. Enable a light or the VRaySun.",
         })
     if len(suns) > 1:
         names = ", ".join(str(s.get("name", "?")) for s in suns[:4])

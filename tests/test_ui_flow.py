@@ -148,6 +148,33 @@ def test_dock_guards_without_inputs(app, tmp_path, monkeypatch):
     d.close()
 
 
+def test_run_on_main_marshals_pymxs_to_the_gui_thread(app, tmp_path, monkeypatch):
+    """The critical safety guarantee: a pymxs call issued from a WORKER thread runs on
+    the MAIN (GUI) thread via _run_on_main — pymxs is main-thread-only."""
+    import threading
+
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    d = dockmod.LightMatchDock()
+    main_tid = threading.get_ident()
+    captured = {}
+
+    def worker_job():
+        # this runs on a worker QThread; the marshalled fn must run on the main thread
+        def pymxs_op():
+            captured["ran_on"] = threading.get_ident()
+            return "ok"
+        captured["worker_on"] = threading.get_ident()
+        return d._run_on_main(pymxs_op)
+
+    d._spawn(worker_job, lambda r: captured.update(result=r))
+    _drain(d, timeout_ms=5000)
+    assert captured["result"] == "ok"
+    assert captured["worker_on"] != main_tid          # the job really ran off-thread
+    assert captured["ran_on"] == main_tid             # but the pymxs op ran on main
+    d.close()
+
+
 def test_dock_autopilot_runs_and_reports(app, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
@@ -168,6 +195,7 @@ def test_dock_autopilot_runs_and_reports(app, tmp_path, monkeypatch):
     d.key_edit.setText("oc_stub")
     d.session["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
     d.session["recipe"] = {"values": [{"param": "cam.iso", "set": 300, "from": 320}]}
+    d._has_recipe = True  # precondition a real Analyze establishes
     d.rounds_spin.setValue(6)
     d._autopilot()
     _drain(d, timeout_ms=6000)

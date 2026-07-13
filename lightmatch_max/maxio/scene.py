@@ -252,13 +252,15 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     if node is None:
                         failed.append(param)
                         continue
+                    setattr(node, m["prop"], val)  # if this throws → failed, no side-writes
+                    # ISO/f-number/shutter no-op unless Exposure is ON (B4 blocker) — but
+                    # flip it only AFTER the set succeeds, so a FAILED cam row never
+                    # silently leaves Exposure toggled (found 2026-07-13).
                     if m["node"] == "cam":
-                        # ISO/f-number/shutter no-op unless Exposure is ON (B4 blocker).
                         try:
                             node.exposure = True
                         except Exception:
                             pass
-                    setattr(node, m["prop"], val)
                     applied.append(param)
                     read = _read_node_prop(node, m["prop"])
 

@@ -20,7 +20,9 @@ def _register():
         "LightMatch",
         "Open LightMatch — match your render's lighting to a reference",
         "LightMatch",
-        'python.Execute "import lightmatch_max.ui.dock as _lmd; _lmd.show_dock()"',
+        # bootstrap.launch() checks deps first → a friendly message box on a missing
+        # package instead of a raw ImportError in the listener.
+        'python.Execute "import lightmatch_max.bootstrap as _lmb; _lmb.launch()"',
     )
 
 
