@@ -1,0 +1,11 @@
+MAX_STRESS_OK
+pull: 15 params, missing=[], counts={'suns': 1, 'vrayLights': 2, 'physCams': 1}
+legal sweep: applied=15 failed=[] manual=[]
+after 1 undo (batch-coalesced): counts={'suns': 0, 'vrayLights': 0, 'physCams': 0} — granularity is an interactive-only check
+hostile: applied=[] failed=['sun.turbidity', 'cm.type', 'cam.iso'] manual=['made.up_param']
+reference measured
+base render captured: 320x240
+analyze: kept=['cam.iso', 'light.multiplier'] withheld=['sun.intensity_mult']
+recipe applied to scene: ['cam.iso', 'light.multiplier']
+attempt scored: look=95.57 match=4% moves=['cam.iso']
+E2E loop complete (2 stubbed model rounds, 2 real renders, 1 real apply)

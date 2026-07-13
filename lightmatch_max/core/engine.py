@@ -134,6 +134,8 @@ def validate_items(target: str, cleaned: dict, mode: str) -> dict:
         seen.add(param)
         v = it.get(val_key)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if not math.isfinite(float(v)):
+                continue  # NaN/Inf move is meaningless — clamp can't fix it; drop the row
             clamped_v, flagged = data.clamp(target, param, float(v))
             it = dict(it)
             it[val_key] = clamped_v

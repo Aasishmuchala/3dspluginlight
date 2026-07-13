@@ -1,0 +1,26 @@
+-- ALC Security Tool 1.3 enabled.
+-- ALC2 Security Tool 1.3 enabled.
+-- PhysXPluginMfx Security Tool 1.3 enabled.
+-- PhysXPluginMfx2 Security Tool 1.1 enabled.
+-- CRP Security Tool 1.1 enabled.
+-- ADSL Security Tool 1.1 enabled.
+-- MSCPROP Security Tool 1.0 enabled.
+
+LightMatch stress: executing C:\Users\aasis\lightmatch-max\scripts\stress_max.py
+MAX_STRESS_OK
+pull: 15 params, missing=[], counts={'suns': 1, 'vrayLights': 2, 'physCams': 1}
+legal sweep: applied=15 failed=[] manual=[]
+after 1 undo (batch-coalesced): counts={'suns': 0, 'vrayLights': 0, 'physCams': 0} — granularity is an interactive-only check
+hostile: applied=[] failed=['sun.turbidity', 'cm.type', 'cam.iso'] manual=['made.up_param']
+reference measured
+base render captured: 320x240
+analyze: kept=['cam.iso', 'light.multiplier'] withheld=['sun.intensity_mult']
+recipe applied to scene: ['cam.iso', 'light.multiplier']
+attempt scored: look=95.57 match=4% moves=['cam.iso']
+E2E loop complete (2 stubbed model rounds, 2 real renders, 1 real apply)
+LightMatch stress: python returned.
+-- ALC Security Tool 1.3 disabled.
+-- ALC2 Security Tool 1.3 disabled.
+-- PhysXPluginMfx Security Tool 1.3 disabled.
+-- CRP Security Tool 1.1 disabled.
+-- ADSL Security Tool 1.1 disabled.

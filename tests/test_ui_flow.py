@@ -1,0 +1,148 @@
+"""Offscreen UI-flow drive of the real LightMatchDock widget — proves the whole
+click-path (reference → grab → analyze → recipe table + checkboxes → apply → check →
+score + correction table) wires up, with the gateway and Max I/O stubbed. Runs under
+Qt's offscreen platform, so it needs no display and no Max. Skips cleanly if PySide6
+is absent (it ships inside Max)."""
+
+from __future__ import annotations
+
+import os
+
+import numpy as np
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+pytest.importorskip("PySide6")
+from PySide6 import QtCore, QtWidgets  # noqa: E402
+
+from lightmatch_max.core import engine  # noqa: E402
+from lightmatch_max.core import session as sess  # noqa: E402
+from lightmatch_max.ui import dock as dockmod  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def app():
+    a = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    yield a
+
+
+def _pil(w=48, h=32, fill=(180, 120, 60)):
+    from PIL import Image
+    arr = np.zeros((h, w, 3), dtype=np.uint8)
+    arr[..., 0], arr[..., 1], arr[..., 2] = fill
+    return Image.fromarray(arr, "RGB")
+
+
+STUB_RECIPE = {
+    "baseline": "settings_screenshot", "hdri_mood": "warm",
+    "values": [
+        {"param": "cam.iso", "set": 260, "from": 320, "step": 1, "confidence": "high", "why": "brighter"},
+        {"param": "light.multiplier", "set": 50, "from": 42, "step": 4, "confidence": "med", "why": "fill"},
+        {"param": "sun.intensity_mult", "set": 1.6, "from": 1.35, "step": 2, "confidence": "high", "why": "key"},
+    ],
+    "rationale": "stub", "gi_notes": "", "status": "continue",
+}
+STUB_CORR = {
+    "moves": [{"param": "cam.iso", "to": 240, "from": 260, "step": 1, "confidence": "high", "why": "trim"}],
+    "rationale": "stub", "status": "continue", "status_reason": "closer", "applied_assumed": True,
+}
+
+
+def _drain(widget, timeout_ms=4000):
+    """Pump the event loop until no worker threads remain (analyze/check run on a
+    QThread and post back)."""
+    deadline = QtCore.QElapsedTimer()
+    deadline.start()
+    app = QtWidgets.QApplication.instance()
+    while deadline.elapsed() < timeout_ms:
+        app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        if all(not t.isRunning() for t in widget._threads):
+            app.processEvents()
+            return
+    raise TimeoutError("worker did not finish")
+
+
+def test_full_dock_flow(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+
+    # stub the gateway: recipe then correction
+    calls = {"n": 0}
+
+    def fake_analyze(*a, **k):
+        calls["n"] += 1
+        # exercise the real validate + Area-withhold path via the engine
+        target, ref, base = a[2], a[3], a[4]
+        lock = k.get("lock_globals", a[7] if len(a) > 7 else False)
+        cleaned = engine.validate_items(target, dict(STUB_RECIPE), "recipe")
+        from lightmatch_max.core.scope import withhold_globals
+        return withhold_globals(cleaned, "values") if lock else cleaned
+
+    def fake_add_attempt(*a, **k):
+        cleaned = engine.validate_items("vray7max", dict(STUB_CORR), "correction")
+        return 8.0, cleaned  # look 8 → 92%
+
+    monkeypatch.setattr(dockmod.engine, "analyze", fake_analyze)
+    monkeypatch.setattr(dockmod.engine, "add_attempt", fake_add_attempt)
+
+    # stub Max I/O the dock touches
+    monkeypatch.setattr(dockmod, "IN_MAX", True)
+    monkeypatch.setattr(dockmod.maxvfb, "grab_vfb", lambda: _pil(fill=(90, 110, 150)))
+    monkeypatch.setattr(dockmod.maxvfb, "render_view", lambda *a, **k: _pil(fill=(120, 110, 90)))
+    applied_log = {}
+    monkeypatch.setattr(
+        dockmod.maxscene, "pull_settings",
+        lambda: {"params": {"sun.turbidity": 3.0, "cam.iso": 320.0}, "renderer": "V_Ray_7", "missing": [], "counts": {}},
+    )
+
+    def fake_apply(values):
+        applied_log["values"] = values
+        return {"applied": [v["param"] for v in values], "failed": [], "manual": []}
+
+    monkeypatch.setattr(dockmod.maxscene, "apply_values", fake_apply)
+
+    d = dockmod.LightMatchDock()
+    d.key_edit.setText("oc_stub")
+    d.lock_chk.setChecked(True)
+
+    # 1) reference via the capture path (bypass the file dialog)
+    d.session["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    # 2) grab a base render
+    d._grab(base=True)
+    assert d.base_capture is not None
+
+    # 3) analyze
+    d._analyze()
+    _drain(d)
+    assert calls["n"] == 1
+    # recipe table shows ONLY the kept camera+local rows; the global was withheld
+    controls = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]
+    assert controls == ["cam.iso", "light.multiplier"]
+    assert "withheld" in d.withheld_label.text().lower()
+    assert "sun.intensity_mult" in d.withheld_label.text()
+
+    # 4) uncheck one row, apply — only the checked control reaches the scene
+    d.table.item(1, 0).setCheckState(QtCore.Qt.Unchecked)
+    d._apply()
+    assert [v["param"] for v in applied_log["values"]] == ["cam.iso"]
+    assert "applied 1" in d.status.text()
+
+    # 5) re-render & check → score + correction table
+    d._check()
+    _drain(d)
+    assert "92%" in d.score_label.text()
+    corr_controls = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]
+    assert corr_controls == ["cam.iso"]
+    # session persisted with the attempt
+    assert len(sess.list_sessions()) >= 1
+    d.close()
+
+
+def test_dock_guards_without_inputs(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    d = dockmod.LightMatchDock()
+    d._analyze()  # no reference/base → guarded, no crash
+    assert "reference" in d.status.text().lower() or "grab" in d.status.text().lower()
+    d.close()

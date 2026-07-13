@@ -19,14 +19,14 @@ from ..core import data, engine, session as sess
 from ..core.metrics import match_percent
 from ..core.omega import DEFAULT_MODEL, OmegaError
 
-try:  # inside Max
-    from ..maxio import scene as maxscene
-    from ..maxio import vfb as maxvfb
-    IN_MAX = True
-except Exception:  # standalone dev preview
-    maxscene = None  # type: ignore
-    maxvfb = None  # type: ignore
-    IN_MAX = False
+import importlib.util
+
+from ..maxio import scene as maxscene
+from ..maxio import vfb as maxvfb
+
+# The maxio modules import cleanly ANYWHERE (pymxs loads lazily inside them), so
+# "did the import succeed" is the wrong Max detector — probe for pymxs itself.
+IN_MAX = importlib.util.find_spec("pymxs") is not None
 
 TARGET = "vray7max"
 AMBER = "#e2a13a"
@@ -36,9 +36,11 @@ class Worker(QtCore.QObject):
     done = QtCore.Signal(object)
     fail = QtCore.Signal(str)
 
-    def __init__(self, fn):
+    def __init__(self, fn, on_done, thread):
         super().__init__()
         self._fn = fn
+        self.on_done = on_done      # called on the GUI thread (see _worker_done)
+        self.thread_ref = thread
 
     def run(self):
         try:
@@ -58,6 +60,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.base_capture: Optional[dict] = None
         self.cfg = sess.load_config()
         self._threads: list[QtCore.QThread] = []
+        self._workers: list[QtCore.QObject] = []
         self._build()
 
     # -- UI scaffold -------------------------------------------------------------
@@ -172,14 +175,43 @@ class LightMatchDock(QtWidgets.QWidget):
         self.status.setText(note)
 
     def _spawn(self, fn, on_done):
+        # Worker runs fn() on its own QThread; results come back via signals connected
+        # to bound methods of THIS widget (GUI-thread affinity) → Qt queues them across
+        # the thread boundary, so the widget-touching callback never runs off the GUI
+        # thread. (Connecting to a bare lambda instead runs it on the WORKER thread —
+        # a latent off-thread-widget crash the offscreen UI test caught.)
         th = QtCore.QThread(self)
-        wk = Worker(fn)
+        wk = Worker(fn, on_done, th)
         wk.moveToThread(th)
         th.started.connect(wk.run)
-        wk.done.connect(lambda r: (on_done(r), th.quit()))
-        wk.fail.connect(lambda m: (self._busy(False, m), th.quit()))
+        wk.done.connect(self._worker_done)
+        wk.fail.connect(self._worker_fail)
+        th.finished.connect(wk.deleteLater)
+        # Keep BOTH the thread and the worker referenced — a local-only Worker is GC'd
+        # the instant _spawn returns (before its thread runs `started → run`), so the job
+        # silently never fires. Cleared in _worker_done/_worker_fail.
+        wk._th = th
         self._threads.append(th)
+        self._workers.append(wk)
         th.start()
+
+    @QtCore.Slot(object)
+    def _worker_done(self, result):
+        wk = self.sender()
+        wk.thread_ref.quit()
+        try:
+            wk.on_done(result)
+        finally:
+            if wk in self._workers:
+                self._workers.remove(wk)
+
+    @QtCore.Slot(str)
+    def _worker_fail(self, msg):
+        wk = self.sender()
+        wk.thread_ref.quit()
+        self._busy(False, msg)
+        if wk in self._workers:
+            self._workers.remove(wk)
 
     # -- actions --------------------------------------------------------------------
     def _pick_reference(self):
@@ -308,14 +340,20 @@ class LightMatchDock(QtWidgets.QWidget):
             pass
 
         def job():
-            img = maxvfb.render_view()
+            # Ease-of-use: the artist has usually JUST rendered in the VFB — grab that
+            # frame rather than forcing a second render; fall back to a fresh render
+            # only when the VFB is empty/unavailable.
+            try:
+                img = maxvfb.grab_vfb()
+            except Exception:
+                img = maxvfb.render_view()
             attempt = sess.capture(img)
             score, correction = engine.add_attempt(
                 key, model, TARGET, ref, attempt, n, history, ctx, lock, live, renderer
             )
             return score, correction
 
-        self._busy(True, f"Rendering attempt {n} and checking…")
+        self._busy(True, f"Checking attempt {n} (grabbing the VFB, rendering if empty)…")
         self._spawn(job, self._check_done)
 
     def _check_done(self, result):

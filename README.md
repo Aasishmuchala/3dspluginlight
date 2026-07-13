@@ -54,11 +54,32 @@ source** — nothing is hand-copied, so the two products can never drift.
 ## Development
 
 ```
-python -m pip install -e .[dev]
-pytest                       # 21 tests incl. TS↔numpy parity vectors
+python -m pip install -e .[dev,ui]
+pytest                                 # 44 tests: TS↔numpy parity, core, stress, offscreen dock flow
 python scripts/smoke_headless.py       # SMOKE_OK — core, anywhere
-3dsmaxbatch scripts/smoke_max.py       # MAX_SMOKE_OK — pymxs pull/apply/undo, in Max
 ```
+
+In-Max validation (headless, real V-Ray scene):
+
+```
+powershell -Command "$env:LIGHTMATCH_MAX=$PWD; Start-Process '<max>/3dsmaxbatch.exe' '\"scripts/run_smoke.ms\"' -Wait -NoNewWindow"
+# verdict → scripts/_smoke_result.txt  (MAX_SMOKE_OK)
+# scripts/run_stress.ms → scripts/_stress_result.txt  (MAX_STRESS_OK): populated-scene
+# pull, full apply sweep, hostile-apply rejection, and the end-to-end loop with two
+# real renders + a real scene apply (the model is stubbed, so no key is needed).
+```
+
+3dsmaxbatch swallows Python stdout and coalesces undo into one hold, so the smokes
+write a **result file** and treat per-record undo granularity as an interactive-only
+check. Max's bundled Python has no pip — install cp311 wheels into its user site once:
+`python -m pip install --python-version 3.11 --only-binary=:all: --target "%APPDATA%\Python\Python311\site-packages" "numpy<2" Pillow requests` (V-Ray's native module needs numpy 1.x).
+
+### Interactive checklist (the one gate left before production use)
+
+Run once inside a real Max session with a live key: (1) the dock opens and docks;
+(2) a real reference + VFB grab → Analyze returns a recipe; (3) checked Apply changes
+the scene and a **single Ctrl+Z** reverts the whole recipe; (4) Re-render & Check
+scores and shows a correction. Everything up to the live model round is machine-proven.
 
 Re-sync the brain after web-repo changes:
 
@@ -69,6 +90,10 @@ cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-m
 ## Status (v0.1)
 
 Core (measurement, evidence, prompts, validation, Area mode, omega client, session
-persistence) is complete and parity-tested against the web implementation. The dock
-UI covers the full loop; chat ("operator line") and the HDRI finder are the next
-ports. `scripts/smoke_max.py` is the real-Max gate to run before first production use.
+persistence) is complete and **parity-tested** against the web implementation, plus an
+adversarial stress suite (degenerate images, hostile model replies, corrupt sessions)
+and an **offscreen drive of the real dock widget** (the full click-path with Max I/O
+and the gateway stubbed). Validated headlessly on **real 3ds Max 2026.2 + V-Ray 7u3**:
+`MAX_SMOKE_OK` and `MAX_STRESS_OK` (full end-to-end loop, two real renders, one real
+scene apply). 44 pytest green. Next ports: the "operator line" chat and the HDRI
+finder. The interactive checklist above is the last gate before first production use.

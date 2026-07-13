@@ -19,6 +19,9 @@ def withhold_globals(cleaned: dict, items_key: str) -> dict:
     items = cleaned.get(items_key) or []
     kept, withheld = [], []
     for it in items:
+        if not isinstance(it, dict):
+            kept.append(it)  # malformed rows pass through — validation is the filter
+            continue
         param = it.get("param")
         if isinstance(param, str) and scope_of(param) == "global":
             raw = it.get("set") if items_key == "values" else it.get("to")
