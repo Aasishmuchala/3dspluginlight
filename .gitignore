@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 dist/
 *.egg-info/
+scripts/_batch.log
+scripts/_smoke_result.txt
