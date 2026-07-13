@@ -15,7 +15,8 @@ from typing import Any, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..core import data, engine, session as sess
+from ..core import autopilot, data, engine, session as sess
+from ..core.census_format import census_block, census_warnings, summarize_for_ui
 from ..core.metrics import match_percent
 from ..core.omega import DEFAULT_MODEL, OmegaError
 
@@ -52,6 +53,8 @@ class Worker(QtCore.QObject):
 
 
 class LightMatchDock(QtWidgets.QWidget):
+    apRow = QtCore.Signal(dict)  # autopilot per-round progress (worker → GUI thread)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("LightMatch")
@@ -61,7 +64,9 @@ class LightMatchDock(QtWidgets.QWidget):
         self.cfg = sess.load_config()
         self._threads: list[QtCore.QThread] = []
         self._workers: list[QtCore.QObject] = []
+        self._ap_cancel = False
         self._build()
+        self.apRow.connect(self._ap_row)
 
     # -- UI scaffold -------------------------------------------------------------
     def _build(self):
@@ -99,6 +104,15 @@ class LightMatchDock(QtWidgets.QWidget):
         self.io_label = QtWidgets.QLabel("Load a reference, then grab your current render.")
         self.io_label.setWordWrap(True)
         lay.addWidget(self.io_label)
+
+        # scene census summary + pre-flight warnings (populated on Analyze)
+        self.census_label = QtWidgets.QLabel("")
+        self.census_label.setStyleSheet("color:#8a8a8a;")
+        lay.addWidget(self.census_label)
+        self.warn_label = QtWidgets.QLabel("")
+        self.warn_label.setWordWrap(True)
+        self.warn_label.setStyleSheet("color:#c47a2a;")
+        lay.addWidget(self.warn_label)
 
         # context + lock
         ctx_row = QtWidgets.QHBoxLayout()
@@ -149,16 +163,35 @@ class LightMatchDock(QtWidgets.QWidget):
         act_row.addWidget(self.check_btn)
         lay.addLayout(act_row)
 
+        # autopilot — run the whole loop unattended
+        ap_row = QtWidgets.QHBoxLayout()
+        self.autopilot_btn = QtWidgets.QPushButton("▶ Autopilot")
+        self.autopilot_btn.setToolTip("Run the refine loop unattended: render → check → apply → repeat until matched.")
+        self.autopilot_btn.clicked.connect(self._autopilot)
+        self.rounds_spin = QtWidgets.QSpinBox()
+        self.rounds_spin.setRange(1, 12)
+        self.rounds_spin.setValue(5)
+        self.rounds_spin.setPrefix("max ")
+        self.rounds_spin.setSuffix(" rounds")
+        self.cancel_btn = QtWidgets.QPushButton("Stop")
+        self.cancel_btn.clicked.connect(self._cancel_autopilot)
+        ap_row.addWidget(self.autopilot_btn, 1)
+        ap_row.addWidget(self.rounds_spin)
+        ap_row.addWidget(self.cancel_btn)
+        lay.addLayout(ap_row)
+
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
 
         if not IN_MAX:
-            self.grab_btn.setEnabled(False)
-            self.render_btn.setEnabled(False)
-            self.apply_btn.setEnabled(False)
-            self.check_btn.setEnabled(False)
+            for b in (self.grab_btn, self.render_btn, self.apply_btn, self.check_btn, self.autopilot_btn):
+                b.setEnabled(False)
             self.status.setText("Standalone preview (no pymxs) — Max-only actions disabled.")
+
+    def _cancel_autopilot(self):
+        self._ap_cancel = True
+        self.status.setText("Autopilot stopping after this round…")
 
     # -- helpers -------------------------------------------------------------------
     def _save_cfg(self):
@@ -170,7 +203,8 @@ class LightMatchDock(QtWidgets.QWidget):
         return {"scene": self.scene_box.currentText(), "time": self.time_box.currentText(), "rig": self.rig_box.currentText()}
 
     def _busy(self, on: bool, note: str = ""):
-        for b in (self.analyze_btn, self.apply_btn, self.check_btn, self.grab_btn, self.render_btn, self.ref_btn):
+        for b in (self.analyze_btn, self.apply_btn, self.check_btn, self.grab_btn,
+                  self.render_btn, self.ref_btn, self.autopilot_btn):
             b.setEnabled(not on and (IN_MAX or b in (self.analyze_btn, self.ref_btn)))
         self.status.setText(note)
 
@@ -246,6 +280,35 @@ class LightMatchDock(QtWidgets.QWidget):
         b = "✓ render" if self.base_capture else "render missing"
         self.io_label.setText(f"{r} · {b}")
 
+    def _collect_scene(self):
+        """Pull live params + full census on the MAIN thread (scene access). Returns
+        (live_params, renderer, census_text, warnings). Best-effort — never raises."""
+        live, renderer, census_text, warnings = None, "", None, []
+        if not IN_MAX:
+            return live, renderer, census_text, warnings
+        try:
+            pulled = maxscene.pull_settings()
+            live, renderer = pulled["params"], pulled["renderer"]
+        except Exception:
+            pass
+        try:
+            census = maxscene.collect_census()
+            warnings = census_warnings(census)
+            census_text = census_block(census)
+            self.census_label.setText(summarize_for_ui(census, warnings))
+        except Exception:
+            pass
+        return live, renderer, census_text, warnings
+
+    def _show_warnings(self, warnings: list[dict]) -> bool:
+        """Render pre-flight warnings; return True if a BLOCK should stop the run."""
+        if not warnings:
+            self.warn_label.setText("")
+            return False
+        lines = [("⛔ " if w["severity"] == "block" else "⚠ ") + w["message"] for w in warnings]
+        self.warn_label.setText("\n".join(lines))
+        return any(w["severity"] == "block" for w in warnings)
+
     def _analyze(self):
         if not self.session.get("ref") or not self.base_capture:
             self.status.setText("Load a reference and grab a render first.")
@@ -254,18 +317,17 @@ class LightMatchDock(QtWidgets.QWidget):
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
         self.session["lock_globals"] = lock
-        live = None
-        renderer = ""
-        if IN_MAX:
-            try:
-                pulled = maxscene.pull_settings()
-                live, renderer = pulled["params"], pulled["renderer"]
-            except Exception:
-                pass
+        live, renderer, census_text, warnings = self._collect_scene()
+        if self._show_warnings(warnings):
+            self.status.setText("Fix the blocking issue above, then Analyze.")
+            return
+        self.session["_census_text"] = census_text  # reused each Check/Autopilot round
+        self.session["_renderer"] = renderer
         ref, base, ctx = self.session["ref"], self.base_capture, self._context()
         self._busy(True, "Reading the light…")
         self._spawn(
-            lambda: engine.analyze(key, model, TARGET, ref, base, ctx, lock, live, renderer),
+            lambda: engine.analyze(key, model, TARGET, ref, base, ctx, lock, live, renderer,
+                                   census_text=census_text),
             self._analyze_done,
         )
 
@@ -294,7 +356,10 @@ class LightMatchDock(QtWidgets.QWidget):
             self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(entry.get("ui_path", v.get("param", ""))))
             self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(f"{v.get('from', '')} → {v.get(val_key, '')}"))
             self.table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(v.get("why", ""))))
-            self.table.item(r, 1).setData(QtCore.Qt.UserRole, {"param": v.get("param"), "set": v.get(val_key)})
+            row = {"param": v.get("param"), "set": v.get(val_key)}
+            if isinstance(v.get("node"), str) and v.get("node"):
+                row["node"] = v["node"]  # per-fixture targeting survives to Apply
+            self.table.item(r, 1).setData(QtCore.Qt.UserRole, row)
 
     def _checked_values(self) -> list[dict]:
         out = []
@@ -302,6 +367,17 @@ class LightMatchDock(QtWidgets.QWidget):
             if self.table.item(r, 0).checkState() == QtCore.Qt.Checked:
                 out.append(self.table.item(r, 1).data(QtCore.Qt.UserRole))
         return out
+
+    def _format_apply(self, res: dict) -> str:
+        bits = [f"applied {len(res.get('applied', []))}"]
+        unverified = res.get("unverified") or []
+        if unverified:
+            bits.append(f"⚠ NOT VERIFIED (something is overriding these): {', '.join(unverified)}")
+        if res.get("failed"):
+            bits.append(f"failed: {', '.join(res['failed'])}")
+        if res.get("manual"):
+            bits.append(f"set by hand: {', '.join(res['manual'])}")
+        return " · ".join(bits) + " — one undo step."
 
     def _apply(self):
         values = self._checked_values()
@@ -313,12 +389,7 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception as e:
             self.status.setText(str(e))
             return
-        bits = [f"applied {len(res['applied'])}"]
-        if res["failed"]:
-            bits.append(f"failed: {', '.join(res['failed'])}")
-        if res["manual"]:
-            bits.append(f"set by hand: {', '.join(res['manual'])}")
-        self.status.setText(" · ".join(bits) + " — one undo step.")
+        self.status.setText(self._format_apply(res))
 
     def _check(self):
         if not self.session.get("ref"):
@@ -339,6 +410,8 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception:
             pass
 
+        census_text = self.session.get("_census_text")
+
         def job():
             # Ease-of-use: the artist has usually JUST rendered in the VFB — grab that
             # frame rather than forcing a second render; fall back to a fresh render
@@ -349,12 +422,84 @@ class LightMatchDock(QtWidgets.QWidget):
                 img = maxvfb.render_view()
             attempt = sess.capture(img)
             score, correction = engine.add_attempt(
-                key, model, TARGET, ref, attempt, n, history, ctx, lock, live, renderer
+                key, model, TARGET, ref, attempt, n, history, ctx, lock, live, renderer,
+                census_text=census_text,
             )
             return score, correction
 
         self._busy(True, f"Checking attempt {n} (grabbing the VFB, rendering if empty)…")
         self._spawn(job, self._check_done)
+
+    # -- AUTOPILOT: run the whole refine loop unattended -----------------------------
+    def _autopilot(self):
+        if not self.session.get("recipe"):
+            self.status.setText("Analyze and apply a recipe first, then Autopilot refines it.")
+            return
+        key = self.key_edit.text().strip()
+        model = self.model_box.currentText()
+        lock = self.lock_chk.isChecked()
+        ctx = self._context()
+        ref = self.session["ref"]
+        census_text = self.session.get("_census_text")
+        renderer = self.session.get("_renderer", "")
+        rounds = int(self.rounds_spin.value())
+        self._ap_cancel = False
+
+        def render_cb():
+            return sess.capture(maxvfb.render_view())
+
+        def correct_cb(cap, n):
+            live = None
+            try:
+                live = maxscene.pull_settings()["params"]
+            except Exception:
+                pass
+            attempt_n = int(self.session.get("attempt_count", 0)) + 1
+            score, corr = engine.add_attempt(
+                key, model, TARGET, ref, cap, attempt_n, sess.history_rounds(self.session),
+                ctx, lock, live, renderer, census_text=census_text,
+            )
+            sess.push_attempt(self.session, score, corr)  # so history grows each round
+            return score, corr
+
+        def apply_cb(moves):
+            return maxscene.apply_values(moves)
+
+        self._busy(True, f"Autopilot: up to {rounds} rounds…")
+        self._spawn(
+            lambda: autopilot.run_autopilot(
+                rounds=rounds, render_cb=render_cb, correct_cb=correct_cb, apply_cb=apply_cb,
+                on_round=lambda row: self.apRow.emit(row),
+                should_stop=lambda: self._ap_cancel,
+            ),
+            self._autopilot_done,
+        )
+
+    @QtCore.Slot(dict)
+    def _ap_row(self, row: dict):
+        self.status.setText(
+            f"Autopilot round {row['n']}: {row['match_percent']}% · "
+            + (row.get("status_reason") or "")
+        )
+
+    def _autopilot_done(self, result: dict):
+        sess.save(self.session)
+        pct = result.get("final_match_percent")
+        reason = result.get("stop_reason", "")
+        msg = {
+            "matched": "MATCHED — stop lighting, move to grading.",
+            "budget": "round budget reached.",
+            "oscillating": "stopped — the score was not settling.",
+            "no_moves": "no further moves proposed.",
+            "cancelled": "cancelled.",
+        }.get(reason, reason)
+        self._busy(False, f"Autopilot done ({len(result.get('rounds', []))} rounds, {pct}% best): {msg}")
+        if pct is not None:
+            matched = result.get("matched")
+            self.score_label.setText(
+                (f"{pct}% — LIGHTING MATCHED" if matched else f"{pct}% match") + f" · autopilot: {msg}"
+            )
+            self.score_label.setStyleSheet("color:#2e8f5b;" if matched else f"color:{AMBER};")
 
     def _check_done(self, result):
         score, correction = result

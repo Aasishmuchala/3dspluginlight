@@ -14,11 +14,30 @@ source** — nothing is hand-copied, so the two products can never drift.
 
 ## Why native beats the bridge
 
+- **It understands the project** — a live SCENE CENSUS inventories every camera, light
+  and sun BY NAME, the HDRI, gamma, and color mapping, and runs PRE-FLIGHT WARNINGS for
+  the silent value-wreckers (environment/camera exposure control eating your EV moves,
+  gamma ≠ 2.2, multiple suns, no camera). Most "the tool gave wrong values" cases are
+  right values dropped into a scene state that ignores them — the census catches that
+  before you render.
+- **No wrong values** — every applied value is READ BACK and confirmed it actually
+  landed; a silent no-op becomes a visible "⚠ NOT VERIFIED" instead of a quiet lie.
+- **Per-fixture, per-area** — a move can name an exact light (`"node":
+  "VRayLight_Kitchen_Fill"`), so on a big project you lock the globals (matched on a
+  hero shot) and solve each room with its own camera + local fixtures.
+- **Cinematic depth** — a Z-depth pass feeds measured depth structure: subject-vs-
+  background separation in stops, aerial-perspective (lifted far blacks + compressed far
+  contrast), per-band tonal profile — the model speaks DP, not histogram.
+- **Autopilot** — one button runs the whole loop unattended: render → check → apply →
+  repeat until measured-matched (with oscillation/budget guards), each round one undo
+  step.
 - **No exporting** — `Grab VFB` / `Render view` reads the frame buffer directly.
 - **No assumed defaults** — the scene's real values are pulled live as the recipe's
   `from` baseline, every time.
 - **Real apply** — recipe rows are set through pymxs (no MAXScript strings at all)
   inside one undo record: `Ctrl+Z` reverts the whole recipe.
+- **Calibration probe** — measure the scene's real response to one knob, then scale
+  every magnitude by that instead of the model's guess.
 - **No server, no CORS, no localhost bridge** — the only network call is the AI
   round to your own omega gateway.
 
@@ -87,13 +106,17 @@ Re-sync the brain after web-repo changes:
 cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-max/data
 ```
 
-## Status (v0.1)
+## Status (v0.2)
 
-Core (measurement, evidence, prompts, validation, Area mode, omega client, session
-persistence) is complete and **parity-tested** against the web implementation, plus an
-adversarial stress suite (degenerate images, hostile model replies, corrupt sessions)
-and an **offscreen drive of the real dock widget** (the full click-path with Max I/O
-and the gateway stubbed). Validated headlessly on **real 3ds Max 2026.2 + V-Ray 7u3**:
-`MAX_SMOKE_OK` and `MAX_STRESS_OK` (full end-to-end loop, two real renders, one real
-scene apply). 44 pytest green. Next ports: the "operator line" chat and the HDRI
-finder. The interactive checklist above is the last gate before first production use.
+Core (measurement, evidence, prompts, validation, Area mode, **scene census +
+warnings, calibration probe, cinematic depth evidence, autopilot, named-node apply +
+read-back verification**, omega client, session persistence) is complete and
+**parity-tested** against the web implementation, plus an adversarial stress suite
+(degenerate images, hostile model replies, corrupt sessions) and an **offscreen drive
+of the real dock widget** (full click-path + autopilot with Max I/O and the gateway
+stubbed). Validated headlessly on **real 3ds Max 2026.2 + V-Ray 7u3**: `MAX_SMOKE_OK`
+and `MAX_STRESS_OK` — full end-to-end loop, census (caught a real GAMMA_OFF warning),
+named-node apply verified on a specific fixture, and autopilot converged in 3 rounds
+over real renders. **77 pytest green.** Next: the "operator line" chat and HDRI-finder
+ports, and float/EXR VFB capture (v0.2 tonemaps to 8-bit; Z-depth is best-effort). The
+interactive checklist above is the last gate before first production use.

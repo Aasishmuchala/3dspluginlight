@@ -146,3 +146,30 @@ def test_dock_guards_without_inputs(app, tmp_path, monkeypatch):
     d._analyze()  # no reference/base → guarded, no crash
     assert "reference" in d.status.text().lower() or "grab" in d.status.text().lower()
     d.close()
+
+
+def test_dock_autopilot_runs_and_reports(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(dockmod, "IN_MAX", True)
+    monkeypatch.setattr(dockmod.maxvfb, "render_view", lambda *a, **k: _pil())
+    monkeypatch.setattr(dockmod.maxscene, "pull_settings", lambda: {"params": {}, "renderer": "V"})
+    monkeypatch.setattr(dockmod.maxscene, "apply_values",
+                        lambda moves: {"applied": [m["param"] for m in moves], "failed": [], "verified": [m["param"] for m in moves], "unverified": [], "manual": []})
+
+    scores = iter([15.0, 6.0, 2.0])  # matched on round 3
+
+    def fake_add_attempt(*a, **k):
+        return next(scores), {"moves": [{"param": "cam.iso", "to": 250, "from": 300}], "status_reason": "r", "status": "continue"}
+
+    monkeypatch.setattr(dockmod.engine, "add_attempt", fake_add_attempt)
+
+    d = dockmod.LightMatchDock()
+    d.key_edit.setText("oc_stub")
+    d.session["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    d.session["recipe"] = {"values": [{"param": "cam.iso", "set": 300, "from": 320}]}
+    d.rounds_spin.setValue(6)
+    d._autopilot()
+    _drain(d, timeout_ms=6000)
+    assert "MATCHED" in d.score_label.text() or "matched" in d.status.text().lower()
+    d.close()

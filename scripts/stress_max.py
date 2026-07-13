@@ -186,6 +186,60 @@ def run() -> None:
     assert score_vectors(attempt_cap["metrics"], attempt_cap["metrics"]) == 0
     log("E2E loop complete (2 stubbed model rounds, 2 real renders, 1 real apply)")
 
+    # -- 6. SCENE CENSUS — full inventory + warnings ----------------------------------
+    from lightmatch_max.core.census_format import census_block, census_warnings, summarize_for_ui
+
+    census = scene.collect_census()
+    warns = census_warnings(census)
+    log(f"census: {summarize_for_ui(census, warns)} | codes={[w['code'] for w in warns]}")
+    assert census["is_vray"] is True
+    assert census["counts"]["cameras"] >= 1 and census["counts"]["suns"] >= 1
+    blk = census_block(census)
+    assert "SCENE CENSUS" in blk and 'put its exact node name' in blk
+    # every sun/camera we created should be named in the block
+    assert any(s["name"] in blk for s in census["suns"])
+
+    # -- 7. NAMED-NODE apply + READ-BACK verification ---------------------------------
+    named = rt.VRayLight()
+    named.type = 0
+    named.name = "LM_Kitchen_Fill"
+    named.multiplier = 10.0
+    res_named = scene.apply_values([{"param": "light.multiplier", "set": 55.0, "node": "LM_Kitchen_Fill"}])
+    log(f"named apply: {res_named}")
+    assert "light.multiplier" in res_named["applied"]
+    assert "light.multiplier" in res_named["verified"]  # read-back confirmed it landed
+    assert abs(rt.getNodeByName("LM_Kitchen_Fill").multiplier - 55.0) < 1e-3, "named node didn't take the value"
+    # a value on a non-existent node fails honestly (never a silent wrong-node write)
+    res_ghost = scene.apply_values([{"param": "light.multiplier", "set": 20.0, "node": "NoSuchLight_xyz"}])
+    assert "light.multiplier" not in res_ghost["applied"]
+
+    # -- 8. AUTOPILOT over REAL renders (model stubbed, converges) --------------------
+    from lightmatch_max.core import autopilot
+
+    ap_scores = iter([18.0, 9.0, 1.5])  # 3rd round matched (<=3)
+    applies = []
+
+    def render_cb():
+        return sess.capture(vfb.render_view(240, 180))
+
+    def correct_cb(cap, n):
+        sc = next(ap_scores)
+        return sc, {"moves": [{"param": "cam.iso", "to": 300 - n * 10, "from": 320}],
+                    "rationale": "ap", "status": "continue", "status_reason": f"round {n}"}
+
+    def apply_cb(moves):
+        r = scene.apply_values(moves)
+        applies.append(r)
+        return r
+
+    ap = autopilot.run_autopilot(rounds=6, render_cb=render_cb, correct_cb=correct_cb, apply_cb=apply_cb)
+    log(f"autopilot: stop={ap['stop_reason']} rounds={len(ap['rounds'])} final={ap['final_match_percent']}%")
+    assert ap["stop_reason"] == "matched" and ap["matched"] is True
+    assert len(ap["rounds"]) == 3 and len(applies) == 2  # matched round did not apply
+    assert ap["final_match_percent"] == 99
+
+    log("ALL FEATURES OK (census + named-node verify + autopilot over real renders)")
+
 
 try:
     run()

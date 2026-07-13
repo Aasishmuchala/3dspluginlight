@@ -81,6 +81,9 @@ def build_user_content(
     live_params: Optional[dict[str, Any]] = None,
     renderer: str = "",
     history: Optional[list[dict]] = None,
+    census_text: Optional[str] = None,   # core.census_format.census_block — ground truth
+    probe_text: Optional[str] = None,    # core.probe.probe_block — measured sensitivity
+    depth_text: Optional[str] = None,    # core.depth_evidence.depth_block — cinematic depth
 ) -> list[dict]:
     content: list[dict] = []
     for img in images:
@@ -89,10 +92,24 @@ def build_user_content(
 
     content.append(text_block(f"{data.evidence_legend()}\n{dumps_r4(bundle)}{asymmetry_line(bundle.get('diff', {}))}"))
 
+    # cinematic depth structure (from the render's Z pass) rides right after the flat
+    # evidence — it's more measured evidence, just depth-resolved.
+    if depth_text:
+        content.append(text_block(depth_text))
+
     if context:
         chips = ", ".join(f"{k}: {v}" for k, v in context.items() if v)
         if chips:
             content.append(text_block(f"SCENE CONTEXT — {chips}"))
+
+    # scene census: the full inventory BY NAME (the model can address a specific fixture
+    # by node name). Ground truth like the live-settings block, but richer.
+    if census_text:
+        content.append(text_block(census_text))
+
+    # calibration probe: the scene's MEASURED response to one knob — scales magnitudes.
+    if probe_text:
+        content.append(text_block(probe_text))
 
     if live_params:
         rows = "\n".join(f"  {k} = {str(v)[:120]}" for k, v in list(live_params.items())[:64])
@@ -158,6 +175,8 @@ def analyze(
     lock_globals: bool = False,
     live_params: Optional[dict[str, Any]] = None,
     renderer: str = "",
+    census_text: Optional[str] = None,
+    depth_text: Optional[str] = None,
 ) -> dict:
     bundle: dict[str, Any] = {"diff": diff_vectors(base["metrics"], ref["metrics"])}
     bundle.update(wb_exposure_evidence(ref["metrics"], base["metrics"]))
@@ -169,6 +188,7 @@ def analyze(
             {"label": "BASE RENDER:", "b64": base["b64"], "media_type": base.get("media_type", "image/png")},
         ],
         bundle, context, live_params, renderer,
+        census_text=census_text, depth_text=depth_text,
     )
     system = data.system_prompt(target, "recipe", lock_globals)
     text = call(key, system, [{"role": "user", "content": content}], model=model)
@@ -193,6 +213,9 @@ def add_attempt(
     lock_globals: bool = False,
     live_params: Optional[dict[str, Any]] = None,
     renderer: str = "",
+    census_text: Optional[str] = None,
+    probe_text: Optional[str] = None,
+    depth_text: Optional[str] = None,
 ) -> tuple[float, dict]:
     score = score_vectors(ref["metrics"], attempt["metrics"])
     bundle: dict[str, Any] = {"diff": diff_vectors(attempt["metrics"], ref["metrics"])}
@@ -205,6 +228,7 @@ def add_attempt(
             {"label": f"ATTEMPT {attempt_n}:", "b64": attempt["b64"], "media_type": attempt.get("media_type", "image/png")},
         ],
         bundle, context, live_params, renderer, history=history,
+        census_text=census_text, probe_text=probe_text, depth_text=depth_text,
     )
     system = data.system_prompt(target, "correction", lock_globals)
     text = call(key, system, [{"role": "user", "content": content}], model=model)

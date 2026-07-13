@@ -193,13 +193,26 @@ def _count(rt, class_name: str) -> int:
 
 def apply_values(values: list[dict]) -> dict[str, list[str]]:
     """Apply recipe/correction rows ({param, set}) directly, inside ONE undo record —
-    Ctrl+Z reverts the whole recipe. Returns {applied, failed, manual}: `manual` are
-    controls the verified map has no scriptable path for (VFB layers, placements…)."""
+    Ctrl+Z reverts the whole recipe.
+
+    Each value may carry an explicit `node` (an exact scene node name) to target a
+    SPECIFIC fixture — "move VRayLight_Kitchen_Fill", not "the first light of its kind"
+    — the scene-census/per-area story. Without `node`, the KNOWN_PROPS kind resolves to
+    the first-of-kind node (created if absent).
+
+    Every set is READ BACK and confirmed to have actually landed, so a silent no-op (the
+    camera-exposure-toggle class of bug) becomes a visible `unverified` entry instead of
+    a quiet lie. Returns {applied, failed, manual, verified, unverified}: `manual` = no
+    scriptable path; `applied` = the set didn't throw; `verified` ⊆ applied = read back
+    to the target value; `unverified` ⊆ applied = set succeeded but the read-back
+    disagreed (something is overriding it — surface it to the user)."""
     rt = _rt()
     props: dict[str, dict] = knownprops()["known_props"]
     applied: list[str] = []
     failed: list[str] = []
     manual: list[str] = []
+    verified: list[str] = []
+    unverified: list[str] = []
     import pymxs  # type: ignore
 
     with pymxs.undo(True, "LightMatch apply"):
@@ -210,6 +223,7 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                 manual.append(str(param))
                 continue
             raw = v.get("set")
+            node_name = v.get("node") if isinstance(v.get("node"), str) and v.get("node") else None
             try:
                 if m["type"] == "bool":
                     val: Any = bool(raw) if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "on", "yes")
@@ -222,26 +236,201 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                         failed.append(param)
                         continue
                     val = options[key]
+
                 if m["node"] == "renderer":
                     found = _discover_renderer_prop(rt, m["prop"])
                     if not found:
                         failed.append(param)
                         continue
                     rt.setProperty(rt.renderers.current, rt.Name(found), val)
+                    applied.append(param)
+                    read = _read_renderer_prop(rt, found)
                 else:
-                    node = _node_for(rt, m["node"], create=True)
+                    # named node overrides first-of-kind; falls back to kind if the name
+                    # is not found (honest failure, never a silent wrong-node write).
+                    node = _node_by_name(rt, node_name) if node_name else _node_for(rt, m["node"], create=True)
                     if node is None:
                         failed.append(param)
                         continue
-                    # ISO/f-number/shutter silently no-op unless the camera's exposure
-                    # toggle is ON (the B4 audit blocker) — enable it, guarded.
                     if m["node"] == "cam":
+                        # ISO/f-number/shutter no-op unless Exposure is ON (B4 blocker).
                         try:
                             node.exposure = True
                         except Exception:
                             pass
                     setattr(node, m["prop"], val)
-                applied.append(param)
+                    applied.append(param)
+                    read = _read_node_prop(node, m["prop"])
+
+                if _values_match(read, val, m["type"]):
+                    verified.append(param)
+                else:
+                    unverified.append(param)
             except Exception:
                 failed.append(param)
-    return {"applied": applied, "failed": failed, "manual": manual}
+    return {
+        "applied": applied, "failed": failed, "manual": manual,
+        "verified": verified, "unverified": unverified,
+    }
+
+
+def _node_by_name(rt, name: str):
+    try:
+        return rt.getNodeByName(name, exact=True)
+    except Exception:
+        try:
+            return rt.getNodeByName(name)
+        except Exception:
+            return None
+
+
+def _read_node_prop(node, prop: str):
+    try:
+        return getattr(node, prop)
+    except Exception:
+        return _READ_FAIL
+
+
+def _read_renderer_prop(rt, found: str):
+    try:
+        return rt.getProperty(rt.renderers.current, rt.Name(found))
+    except Exception:
+        return _READ_FAIL
+
+
+class _ReadFail:
+    pass
+
+
+_READ_FAIL = _ReadFail()
+
+
+def _values_match(read, expected, kind: str) -> bool:
+    """Did the read-back land on the value we set? Tolerant on floats; the sentinel
+    _READ_FAIL (couldn't read) counts as unverified, never as a match."""
+    if read is _READ_FAIL:
+        return False
+    try:
+        if kind == "float":
+            return abs(float(read) - float(expected)) <= max(1e-4, abs(float(expected)) * 1e-4)
+        if kind == "bool":
+            return bool(read) == bool(expected)
+        return int(read) == int(expected)  # enum
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------------
+# SCENE CENSUS — the "understand the project" collector. Reads the whole lighting
+# inventory BY NAME plus the silent value-wreckers (exposure control, gamma, color
+# mapping) into the dict shape core.census_format consumes. Every read is guarded:
+# one odd node must never sink the census.
+# ---------------------------------------------------------------------------------
+_VRAY_LIGHT_TYPE = {0: "plane", 1: "dome", 2: "sphere", 3: "mesh", 4: "disc"}
+
+
+def _try(getter, default=None):
+    try:
+        return getter()
+    except Exception:
+        return default
+
+
+def _str(v) -> Optional[str]:
+    try:
+        s = str(v)
+        return s if s and s.lower() != "undefined" else None
+    except Exception:
+        return None
+
+
+def _texmap_file(rt, node) -> Optional[str]:
+    tex = _try(lambda: node.texmap)
+    if tex is None:
+        return None
+    # Bitmaptexture → .filename; VRayHDRI → .HDRIMapName
+    return _str(_try(lambda: tex.filename)) or _str(_try(lambda: tex.HDRIMapName))
+
+
+def collect_census() -> dict:
+    """Full live inventory for core.census_format (warnings + ground-truth prompt block)."""
+    rt = _rt()
+    renderer = renderer_name()
+    census: dict[str, Any] = {
+        "renderer": renderer,
+        "is_vray": is_vray(),
+        "cameras": [],
+        "lights": [],
+        "suns": [],
+        "environment_map": None,
+        "exposure_control": {"class": None, "active": None},
+        "gamma": None,
+        "color_mapping": {"type": None},
+        "counts": {},
+    }
+
+    # cameras (physical cameras carry the exposure toggle that eats ISO/f/shutter moves)
+    for cam in _try(lambda: list(rt.cameras), []) or []:
+        cls = _str(_try(lambda: rt.classOf(cam)))
+        census["cameras"].append({
+            "name": _str(_try(lambda: cam.name)) or "?",
+            "class": cls,
+            "exposure_on": _try(lambda: bool(cam.exposure)) if cls == "VRayPhysicalCamera" else None,
+        })
+
+    # lights — split VRaySun out of the light collection
+    for lt in _try(lambda: list(rt.lights), []) or []:
+        cls = _str(_try(lambda: rt.classOf(lt))) or "?"
+        name = _str(_try(lambda: lt.name)) or "?"
+        if "vraysun" in cls.lower():
+            census["suns"].append({
+                "name": name,
+                "on": _try(lambda: bool(lt.enabled)),
+                "intensity_mult": _try(lambda: float(lt.intensity_multiplier)),
+            })
+        else:
+            vt = _try(lambda: int(lt.type))
+            census["lights"].append({
+                "name": name,
+                "class": cls,
+                "vray_type": _VRAY_LIGHT_TYPE.get(vt) if vt is not None and "vraylight" in cls.lower() else None,
+                "on": _try(lambda: bool(lt.on)),
+                "multiplier": _try(lambda: float(lt.multiplier)),
+                "texmap_file": _texmap_file(rt, lt),
+            })
+
+    # environment map (HDRI dome via world environment)
+    env = _try(lambda: rt.environmentMap)
+    if env is not None:
+        census["environment_map"] = _str(_try(lambda: env.filename)) or _str(_try(lambda: env.HDRIMapName))
+
+    # exposure control — the classic silent EV-eater
+    ec = _try(lambda: rt.SceneExposureControl.exposureControl)
+    if ec is not None:
+        ec_cls = _str(_try(lambda: rt.classOf(ec)))
+        census["exposure_control"] = {
+            "class": ec_cls,
+            # "active" when there IS a real exposure control that isn't the explicit none
+            "active": bool(ec_cls) and ec_cls not in ("undefined", "NoExposureControl"),
+        }
+
+    # gamma: displayGamma when correction is enabled, else effectively 1.0 (linear)
+    if _try(lambda: bool(rt.gammaCorrectionEnabled)):
+        census["gamma"] = _try(lambda: float(rt.displayGamma))
+    else:
+        census["gamma"] = 1.0
+
+    # color mapping type (engine-discovered property)
+    if census["is_vray"]:
+        found = _discover_renderer_prop(rt, "colorMapping_type")
+        if found:
+            idx = _try(lambda: int(rt.getProperty(rt.renderers.current, rt.Name(found))))
+            if idx is not None:
+                census["color_mapping"]["type"] = CM_TYPE_BY_INDEX.get(idx)
+
+    census["counts"] = {
+        "suns": len(census["suns"]),
+        "lights": len(census["lights"]),
+        "cameras": len(census["cameras"]),
+    }
+    return census
