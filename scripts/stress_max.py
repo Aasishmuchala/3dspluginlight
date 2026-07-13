@@ -47,11 +47,23 @@ def run() -> None:
     box = rt.Box(); box.width = 120; box.length = 120; box.height = 80
     teapot = rt.Teapot(); teapot.radius = 40; teapot.position = rt.Point3(90, 60, 0)
     pulled = scene.pull_settings()
+    renderer_cls = str(rt.classOf(rt.renderers.current))
+    log(f"renderer: {renderer_cls}")
     log(f"pull: {len(pulled['params'])} params, missing={pulled['missing']}, counts={pulled['counts']}")
     assert pulled["counts"]["suns"] == 1 and pulled["counts"]["physCams"] == 1, "scene population failed"
-    assert len(pulled["missing"]) <= 1, f"too many missing on a populated scene: {pulled['missing']}"
+    # V-Ray GPU doesn't expose colorMapping_type as a pymxs property (it's configured
+    # through a different UI surface); anything else missing on a populated scene
+    # indicates a real discoverability problem.
+    gpu_renderer = "gpu" in renderer_cls.lower()
+    assert len(pulled["missing"]) <= (1 if gpu_renderer else 0), \
+        f"too many missing on a populated scene: {pulled['missing']}"
 
     # -- 2. legal apply sweep — every KNOWN_PROPS param --------------------------------
+    # cm.type (color mapping type) is a V-Ray CPU renderer property and is not
+    # addressable through pymxs on V-Ray GPU — the plugin correctly reports it as
+    # missing on pull, and apply_values would honestly report it as failed rather than
+    # silently writing elsewhere. Skip it from the legal sweep when GPU is the active
+    # renderer (the cm.type control is still tested in the CPU smoke path).
     legal = {
         "sun.enabled": True, "sun.intensity_mult": 1.35, "sun.size_mult": 2.0,
         "sun.turbidity": 3.1, "sun.ozone": 0.4, "sun.invisible": False,
@@ -60,13 +72,17 @@ def run() -> None:
         "cam.iso": 320.0, "cam.fnumber": 5.6, "cam.shutter": 125.0,
         "cm.type": "Exponential",
     }
+    if gpu_renderer:
+        legal.pop("cm.type", None)
+        log("GPU renderer: skipping cm.type from the legal sweep (CPU-only property)")
     res = scene.apply_values([{"param": k, "set": v} for k, v in legal.items()])
     log(f"legal sweep: applied={len(res['applied'])} failed={res['failed']} manual={res['manual']}")
     assert not res["failed"] and not res["manual"], f"legal sweep had misses: {res}"
     after = scene.pull_settings()["params"]
     assert abs(after["sun.intensity_mult"] - 1.35) < 1e-4
     assert abs(after["cam.iso"] - 320.0) < 1e-4
-    assert after["cm.type"] == "Exponential"
+    if not gpu_renderer:
+        assert after["cm.type"] == "Exponential"
     assert after["light.invisible"] is True
 
     # -- 3. undo — ADVISORY in batch: 3dsmaxbatch coalesces the whole run into one
@@ -87,6 +103,9 @@ def run() -> None:
     assert abs(scene.pull_settings()["params"]["sun.turbidity"] - 3.1) < 1e-4
 
     # -- 4. hostile apply — nothing lands, verdicts are honest -------------------------
+    # cm.type with a bogus enum value is rejected by the pack's options lookup on BOTH
+    # renderers (CPU and GPU): the apply layer never gets as far as the renderer-property
+    # discovery, so it lands in `failed` either way (not `manual`/`missing`).
     hostile = [
         {"param": "sun.turbidity", "set": "3.0; deleteFile everything"},
         {"param": "cm.type", "set": "TotallyFakeMode"},
@@ -97,7 +116,7 @@ def run() -> None:
     log(f"hostile: applied={res_h['applied']} failed={res_h['failed']} manual={res_h['manual']}")
     assert res_h["applied"] == [], "hostile row applied!"
     assert set(res_h["failed"]) == {"sun.turbidity", "cm.type", "cam.iso"}
-    assert res_h["manual"] == ["made.up_param"]
+    assert set(res_h["manual"]) == {"made.up_param"}
     still = scene.pull_settings()["params"]
     assert abs(still["sun.turbidity"] - 3.1) < 1e-4, "hostile pass disturbed a value"
 

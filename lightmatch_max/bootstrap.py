@@ -8,11 +8,46 @@ heavy at top level, so importing IT never fails on a missing dependency."""
 from __future__ import annotations
 
 import importlib
+import os
+import sys
 
 REQUIRED = ("numpy", "PIL", "requests")
 
 
+def _ensure_usersite_on_path() -> None:
+    """3ds Max's interactive Python doesn't auto-initialize site.py, so the user-site
+    directory (where the bundled pip falls back to via --target) is NOT on sys.path
+    like it is for the standalone python.exe. Try several candidates — site.py's value
+    first (works when site is initialized), then hardcoded env-var paths (works when
+    it isn't). For each candidate, also resolve realpath() before adding — handles
+    Windows AppContainer virtualization where APPDATA points to a per-app sandbox
+    inside Packages\\<sid>\\LocalCache; realpath returns the on-disk location other
+    apps like Max can actually read."""
+    import os as _os
+    candidates: list[str] = []
+    try:
+        import site
+        candidates.append(site.getusersitepackages())
+    except Exception:
+        pass
+    for env_var in ("APPDATA", "LOCALAPPDATA"):
+        base = _os.environ.get(env_var)
+        if base:
+            candidates.append(_os.path.join(base, "Python", "Python311", "site-packages"))
+    for path in candidates:
+        if not path or path in sys.path:
+            continue
+        # Add both the env-var-derived path and its realpath — the realpath handles
+        # Windows AppContainer sandbox redirection; the literal path covers the
+        # normal case. Whichever exists and is readable will do.
+        for candidate in (path, _os.path.realpath(path)):
+            if candidate and candidate not in sys.path:
+                sys.path.insert(0, candidate)
+        return
+
+
 def _missing() -> list[str]:
+    _ensure_usersite_on_path()
     out = []
     for mod in REQUIRED:
         try:

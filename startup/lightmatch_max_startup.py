@@ -10,9 +10,23 @@ import sys
 LIGHTMATCH_MAX_REPO = os.environ.get("LIGHTMATCH_MAX", r"C:\Users\aasis\lightmatch-max")
 
 
-def _register():
+def _prep_path():
+    """Interactive 3ds Max's Python doesn't auto-initialize site.py, so the user-site
+    directory (where bundled-pip fallback installs) is not on sys.path — add it now so
+    the deps check inside bootstrap.launch() finds numpy/PIL/requests. Idempotent."""
     if LIGHTMATCH_MAX_REPO not in sys.path:
         sys.path.insert(0, LIGHTMATCH_MAX_REPO)
+    try:
+        import site
+        usp = site.getusersitepackages()
+    except Exception:
+        usp = None
+    if usp and usp not in sys.path and os.path.isdir(usp):
+        sys.path.insert(0, usp)
+
+
+def _register():
+    _prep_path()
     from pymxs import runtime as rt  # type: ignore
 
     rt.macros.new(
@@ -20,9 +34,16 @@ def _register():
         "LightMatch",
         "Open LightMatch — match your render's lighting to a reference",
         "LightMatch",
-        # bootstrap.launch() checks deps first → a friendly message box on a missing
-        # package instead of a raw ImportError in the listener.
-        'python.Execute "import lightmatch_max.bootstrap as _lmb; _lmb.launch()"',
+        # Inline sys.path setup BEFORE importing bootstrap — interactive 3ds Max's
+        # python.Execute doesn't auto-init site.py, so user-site-packages is missing
+        # from sys.path. The bootstrap itself has belt-and-suspenders for this too;
+        # this is just the most aggressive first line of defense (zero cache risk).
+        'python.Execute "import sys, os; '
+        '[sys.path.insert(0, p) for p in ['
+        "os.path.join(os.environ.get('APPDATA', ''), 'Python', 'Python311', 'site-packages'), "
+        "os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Python', 'Python311', 'site-packages')"
+        '] if p and os.path.isdir(p)]; '
+        'import lightmatch_max.bootstrap as _lmb; _lmb.launch()"',
     )
 
 
