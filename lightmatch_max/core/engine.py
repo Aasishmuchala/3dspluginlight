@@ -171,6 +171,15 @@ def validate_items(target: str, cleaned: dict, mode: str) -> dict:
 
 
 # -- the two rounds -----------------------------------------------------------------------
+def _one_recipe(key: str, model: str, system: str, content: list[dict]) -> Optional[dict]:
+    """One gateway round → parsed recipe obj (with a values list), or None if this run's
+    reply carried no recipe JSON. Raises on transport/auth (OmegaError) so the caller
+    can surface it."""
+    text = call(key, system, [{"role": "user", "content": content}], model=model)
+    obj = parse_json_from_text(text)
+    return obj if (obj and isinstance(obj.get("values"), list)) else None
+
+
 def analyze(
     key: str,
     model: str,
@@ -183,6 +192,7 @@ def analyze(
     renderer: str = "",
     census_text: Optional[str] = None,
     depth_text: Optional[str] = None,
+    consensus: bool = False,
 ) -> dict:
     bundle: dict[str, Any] = {"diff": diff_vectors(base["metrics"], ref["metrics"])}
     bundle.update(wb_exposure_evidence(ref["metrics"], base["metrics"]))
@@ -197,10 +207,37 @@ def analyze(
         census_text=census_text, depth_text=depth_text,
     )
     system = data.system_prompt(target, "recipe", lock_globals)
-    text = call(key, system, [{"role": "user", "content": content}], model=model)
-    obj = parse_json_from_text(text)
-    if not obj or not isinstance(obj.get("values"), list):
-        raise ValueError("the model's reply carried no recipe JSON — try Analyze again")
+
+    if consensus:
+        # CONSENSUS ×3: three IDENTICAL analyses in parallel (the gateway call is I/O, so
+        # threads give real wall-clock parallelism), merged (median numerics / majority
+        # strings) to kill run-to-run model variance on the INITIAL recipe. One flaky run
+        # must not waste the others — any ≥1 shape-valid run still yields a (thinner)
+        # consensus; all-failed re-raises the first transport error.
+        import concurrent.futures as _cf
+
+        objs: list[dict] = []
+        first_err: Optional[Exception] = None
+        with _cf.ThreadPoolExecutor(max_workers=3) as ex:
+            futs = [ex.submit(_one_recipe, key, model, system, content) for _ in range(3)]
+            for f in _cf.as_completed(futs):
+                try:
+                    r = f.result()
+                    if r is not None:
+                        objs.append(r)
+                except Exception as e:  # noqa: BLE001
+                    first_err = first_err or e
+        if not objs:
+            if first_err is not None:
+                raise first_err
+            raise ValueError("the model's replies carried no recipe JSON — try Analyze again")
+        from .consensus import merge_consensus_recipes
+        obj = merge_consensus_recipes(objs)
+    else:
+        obj = _one_recipe(key, model, system, content)
+        if obj is None:
+            raise ValueError("the model's reply carried no recipe JSON — try Analyze again")
+
     recipe = validate_items(target, obj, "recipe")
     if lock_globals:
         recipe = withhold_globals(recipe, "values")

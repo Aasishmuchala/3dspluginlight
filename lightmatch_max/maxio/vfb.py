@@ -119,6 +119,48 @@ def grab_z_depth(width: int = 0, height: int = 0):
         return None
 
 
+def grab_float_luminance(width: int = 0, height: int = 0):
+    """Best-effort SCENE-REFERRED (linear, pre-tonemap) luminance from the render, as an
+    H×W float array — the basis for EXACT exposure/CCT (vs. the 8-bit-tonemapped path).
+    SELF-GATING: returns (lum, True) only when the grabbed pixels actually carry HDR
+    values (any channel > 1.0 in 0..1 terms), which means it's genuinely float/scene-
+    referred; otherwise returns None so the safe 8-bit path is used. NEVER raises.
+
+    NOTE: this is OFF by default until a live session confirms the VFB channel really is
+    linear on this build — reading a display-referred channel as if linear would feed the
+    model wrong numbers, which is worse than the honest 8-bit read. See README.
+    """
+    try:
+        import numpy as np
+        rt = _rt()
+        if width and height:
+            bmp = rt.render(outputSize=rt.Point2(width, height), vfb=False)
+        else:
+            bmp = rt.render(vfb=False)
+        w, h = int(bmp.width), int(bmp.height)
+        rows = []
+        for y in range(h):
+            px = rt.getPixels(bmp, rt.Point2(0, y), w)
+            row = np.empty((w, 3), dtype=np.float64)
+            for x in range(w):
+                c = px[x]
+                row[x, 0] = float(c.r) / 255.0
+                row[x, 1] = float(c.g) / 255.0
+                row[x, 2] = float(c.b) / 255.0
+            rows.append(row)
+        try:
+            rt.close(bmp)
+        except Exception:
+            pass
+        rgb = np.stack(rows, axis=0)  # H×W×3, ~linear 0..(>1 for HDR)
+        if float(rgb.max()) <= 1.0001:
+            return None  # clamped/8-bit — not genuinely float; use the safe path
+        lum = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+        return lum, True
+    except Exception:
+        return None
+
+
 def _try_render_element_bitmap(rt, zel):
     for attr in ("bitmap", "renderbitmap"):
         b = None

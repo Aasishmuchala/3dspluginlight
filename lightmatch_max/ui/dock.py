@@ -89,12 +89,21 @@ class LightMatchDock(QtWidgets.QWidget):
         finally:
             call["event"].set()
 
+    # Bound wait: if the main-thread Qt loop ever stalls (a modal, a blocking render
+    # path), an unbounded wait would freeze Max forever. A generous timeout turns a
+    # hang into a clean, debuggable error instead. Renders can be slow, so it is long.
+    MAIN_CALL_TIMEOUT_S = 600
+
     def _run_on_main(self, fn):
         if QtCore.QThread.currentThread() is self.thread():
             return fn()  # already on the main thread
         call = {"fn": fn, "event": threading.Event(), "result": None, "error": None}
         self._mainCall.emit(call)  # queued → runs in _exec_main_call on the main thread
-        call["event"].wait()
+        if not call["event"].wait(timeout=self.MAIN_CALL_TIMEOUT_S):
+            raise TimeoutError(
+                "3ds Max did not respond on the main thread within "
+                f"{self.MAIN_CALL_TIMEOUT_S}s — a render or dialog may be blocking it."
+            )
         if call["error"] is not None:
             raise call["error"]
         return call["result"]
@@ -156,6 +165,20 @@ class LightMatchDock(QtWidgets.QWidget):
         self.lock_chk.setToolTip("Per-area pass on a big project: sun/sky/fog/color mapping stay frozen; solve with camera + local lights only.")
         ctx_row.addWidget(self.lock_chk)
         lay.addLayout(ctx_row)
+
+        # options row: consensus + diagnostics
+        opt_row = QtWidgets.QHBoxLayout()
+        self.consensus_chk = QtWidgets.QCheckBox("Consensus ×3")
+        self.consensus_chk.setToolTip("Merge three analyses (median) for a steadier first recipe — 3× the cost & time.")
+        self.consensus_chk.setChecked(self.cfg.get("consensus", False))
+        self.consensus_chk.toggled.connect(lambda *_: self._save_cfg())
+        opt_row.addWidget(self.consensus_chk)
+        opt_row.addStretch(1)
+        self.diag_btn = QtWidgets.QPushButton("Run diagnostics")
+        self.diag_btn.setToolTip("10-second self-test of the Max + gateway plumbing — run this first.")
+        self.diag_btn.clicked.connect(self._diagnostics)
+        opt_row.addWidget(self.diag_btn)
+        lay.addLayout(opt_row)
 
         # analyze
         self.analyze_btn = QtWidgets.QPushButton("Analyze the match")
@@ -228,6 +251,7 @@ class LightMatchDock(QtWidgets.QWidget):
     def _save_cfg(self):
         self.cfg["key"] = self.key_edit.text().strip()
         self.cfg["model"] = self.model_box.currentText()
+        self.cfg["consensus"] = self.consensus_chk.isChecked()
         sess.save_config(self.cfg)
 
     def _context(self) -> dict[str, str]:
@@ -237,8 +261,8 @@ class LightMatchDock(QtWidgets.QWidget):
         # Reference + Analyze are always usable (Analyze guards on inputs/key itself).
         self.ref_btn.setEnabled(not busy)
         self.analyze_btn.setEnabled(not busy)
-        # Scene I/O needs Max.
-        for b in (self.grab_btn, self.render_btn):
+        # Scene I/O + diagnostics need Max.
+        for b in (self.grab_btn, self.render_btn, self.diag_btn):
             b.setEnabled(not busy and IN_MAX)
         # Apply / Check / Autopilot need Max AND a recipe on the table — disabled on
         # first open so the artist is guided to Analyze first, not into a dead-end.
@@ -390,13 +414,83 @@ class LightMatchDock(QtWidgets.QWidget):
         self.session["_census_text"] = census_text  # reused each Check/Autopilot round
         self.session["_renderer"] = renderer
         ref, base, ctx = self.session["ref"], self.base_capture, self._context()
+        consensus = self.consensus_chk.isChecked()
         # engine.analyze does NO pymxs (evidence + gateway + validate) — safe on a worker.
-        self._busy(True, "Reading the light…")
+        self._busy(True, "Reading the light" + (" (consensus ×3)…" if consensus else "…"))
         self._spawn(
             lambda: engine.analyze(key, model, TARGET, ref, base, ctx, lock, live, renderer,
-                                   census_text=census_text),
+                                   census_text=census_text, consensus=consensus),
             self._analyze_done,
         )
+
+    # -- DIAGNOSTICS: a fast self-test of the whole Max + gateway plumbing, run FIRST -
+    def _diagnostics(self):
+        from ..core import diagnostics
+        from ..core import omega as _omega
+
+        _cw, _sui = census_warnings, summarize_for_ui
+        key = self.key_edit.text().strip()
+        model = self.model_box.currentText()
+
+        def check_deps():
+            import numpy, PIL, requests  # noqa: F401
+            return "numpy, Pillow, requests present"
+
+        def check_renderer():
+            name = self._run_on_main(maxscene.renderer_name)
+            if "v_ray" not in name.lower().replace("-", "_"):
+                raise RuntimeError(f"active renderer is {name}, not V-Ray")
+            return name
+
+        def check_pull():
+            p = self._run_on_main(maxscene.pull_settings)
+            return f"{len(p['params'])} params, {len(p['missing'])} missing"
+
+        def check_census():
+            c = self._run_on_main(maxscene.collect_census)
+            w = _cw(c)
+            blocks = [x["code"] for x in w if x["severity"] == "block"]
+            if blocks:
+                raise RuntimeError("blocking: " + ", ".join(blocks))
+            return _sui(c, w)
+
+        def check_apply_verify():
+            # non-destructive: re-apply a param to its CURRENT value and confirm read-back.
+            def op():
+                p = maxscene.pull_settings()["params"]
+                for k in ("sun.turbidity", "cam.iso", "light.multiplier"):
+                    if k in p and isinstance(p[k], (int, float)):
+                        r = maxscene.apply_values([{"param": k, "set": p[k]}])
+                        return f"{k} verified" if k in r.get("verified", []) else f"{k} applied (unverified)"
+                return "no scalar param to test (scene has no sun/cam/light)"
+            return self._run_on_main(op)
+
+        def check_marshaller():
+            return "ok" if self._run_on_main(lambda: "ok") == "ok" else "FAILED"
+
+        def check_key():
+            if not key:
+                return "no key yet — paste your oc_ key before Analyze"
+            return _omega.ping(key, model)
+
+        checks = [
+            ("Python dependencies", check_deps),
+            ("3ds Max / V-Ray reachable", check_renderer),
+            ("Scene pull", check_pull),
+            ("Scene census + warnings", check_census),
+            ("Apply + read-back verify", check_apply_verify),
+            ("Main-thread marshaller", check_marshaller),
+            ("Gateway key", check_key),
+        ]
+        self._busy(True, "Running diagnostics…")
+        self._spawn(lambda: diagnostics.run_checks(checks), self._diagnostics_done)
+
+    def _diagnostics_done(self, results: list):
+        from ..core import diagnostics
+        report = diagnostics.format_report(results)
+        self._busy(False, "Diagnostics complete.")
+        self.warn_label.setText(report)
+        self.warn_label.setStyleSheet("color:#2e8f5b;" if diagnostics.all_passed(results) else "color:#c47a2a;")
 
     def _analyze_done(self, recipe: dict):
         self.session["recipe"] = recipe

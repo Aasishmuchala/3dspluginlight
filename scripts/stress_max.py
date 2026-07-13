@@ -240,6 +240,55 @@ def run() -> None:
 
     log("ALL FEATURES OK (census + named-node verify + autopilot over real renders)")
 
+    # -- 9. CONSENSUS ×3 (stubbed 3 identical calls merged) ---------------------------
+    from lightmatch_max.core import omega as omega_mod2
+
+    variant = {"n": 0}
+    variants = [
+        {"values": [{"param": "cam.iso", "set": 200, "from": 320, "step": 1, "why": "a"},
+                    {"param": "sun.intensity_mult", "set": 1.4, "from": 1.0, "step": 2, "why": "b"}],
+         "baseline": "factory_defaults", "rationale": "r"},
+        {"values": [{"param": "cam.iso", "set": 260, "from": 320, "step": 1, "why": "a"},
+                    {"param": "sun.intensity_mult", "set": 1.6, "from": 1.0, "step": 2, "why": "b"}],
+         "baseline": "factory_defaults", "rationale": "r"},
+        {"values": [{"param": "cam.iso", "set": 230, "from": 320, "step": 1, "why": "a"},
+                    {"param": "sun.intensity_mult", "set": 1.5, "from": 1.0, "step": 2, "why": "b"}],
+         "baseline": "factory_defaults", "rationale": "r"},
+    ]
+
+    def fake_call_consensus(key, system, messages, model=omega_mod2.DEFAULT_MODEL, max_tokens=8192):
+        i = variant["n"] % 3
+        variant["n"] += 1
+        return _json.dumps(variants[i])
+
+    engine.call = fake_call_consensus
+    con = engine.analyze("oc_stub", "claude-opus-4-8", "vray7max", ref_cap, base_cap,
+                         {"scene": "interior"}, lock_globals=False, live_params=live["params"],
+                         renderer=live["renderer"], consensus=True)
+    con_vals = {v["param"]: v for v in con["values"]}
+    log(f"consensus: runs={con.get('consensus', {}).get('runs')} iso={con_vals['cam.iso']['set']} sun={con_vals['sun.intensity_mult']['set']}")
+    assert con.get("consensus", {}).get("runs") == 3
+    assert con_vals["cam.iso"]["set"] == 230 and con_vals["sun.intensity_mult"]["set"] == 1.5  # medians
+
+    # -- 10. DIAGNOSTICS runner over REAL pymxs --------------------------------------
+    from lightmatch_max.core import diagnostics
+    from lightmatch_max.core.census_format import census_warnings as _cw2
+
+    checks = [
+        ("renderer", lambda: scene.renderer_name()),
+        ("pull", lambda: f"{len(scene.pull_settings()['params'])} params"),
+        ("census", lambda: [w["code"] for w in _cw2(scene.collect_census())]),
+    ]
+    diag = diagnostics.run_checks(checks)
+    log("diagnostics: " + " | ".join(f"{d['name']}={'ok' if d['ok'] else 'FAIL'}" for d in diag))
+    assert all(d["ok"] for d in diag), f"a diagnostic failed: {diag}"
+
+    # -- 11. FLOAT grab (best-effort; may be None on a default scene) ------------------
+    fl = vfb.grab_float_luminance(120, 90)
+    log(f"float grab: {'HDR array ' + str(fl[0].shape) if fl else 'None (8-bit fallback — calibrate live)'}")
+
+    log("HARDENING OK (consensus + diagnostics + float scaffold)")
+
 
 try:
     run()

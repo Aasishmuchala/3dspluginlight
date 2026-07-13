@@ -95,16 +95,39 @@ check. Max's bundled Python has no pip — install cp311 wheels into its user si
 
 ### Interactive checklist (the one gate left before production use)
 
-Run once inside a real Max session with a live key: (1) the dock opens and docks;
-(2) a real reference + VFB grab → Analyze returns a recipe; (3) checked Apply changes
-the scene and a **single Ctrl+Z** reverts the whole recipe; (4) Re-render & Check
-scores and shows a correction. Everything up to the live model round is machine-proven.
+Run once inside a real Max session with a live key:
+0. **Run diagnostics first** — the button self-tests the whole Max + gateway plumbing
+   in ~10s (deps, renderer, pull, census + warnings, apply→read-back verify, the
+   main-thread marshaller, and a gateway key ping). All ✓ means the real run will work.
+1. The dock opens and docks.
+2. A real reference + VFB grab → Analyze returns a recipe (try **Consensus ×3** for a
+   steadier first pass, at 3× cost).
+3. Checked Apply changes the scene and a **single Ctrl+Z** reverts the whole recipe;
+   any value that didn't take shows as "⚠ NOT VERIFIED".
+4. Re-render & Check scores and shows a correction; ▶ Autopilot runs the loop unattended.
+5. **Float VFB calibration (optional):** float/EXR scene-referred capture is BUILT but
+   OFF by default — it self-gates to the safe 8-bit path unless it detects true HDR
+   pixels. Confirming the VFB channel is linear on your build is a one-time live check
+   before trusting exact (vs. display-approximate) exposure/CCT.
+
+Everything up to the live model round — including the main-thread marshalling and
+autopilot — is machine-proven headlessly.
 
 Re-sync the brain after web-repo changes:
 
 ```
 cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-max/data
 ```
+
+## Status (v0.3)
+
+Adds pre-test hardening on top of v0.2: an in-Max **diagnostics** self-test, a
+main-thread-marshaller **timeout** guard (no frozen Max), a depth-pass **sanity gate**
+(a bad Z read can't mislead the model), **Consensus ×3** (median-merge three analyses
+for a steadier first recipe), and a **float/EXR capture scaffold** (self-gating, OFF
+until a live calibration confirms the VFB channel is linear). 89 pytest green,
+`MAX_STRESS_OK` re-validated (consensus merged to the correct medians, diagnostics
+passed over real pymxs, float grab safely fell back).
 
 ## Status (v0.2)
 

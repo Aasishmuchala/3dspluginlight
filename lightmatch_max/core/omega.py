@@ -121,6 +121,20 @@ def call(
     raise OmegaError(last, "network")
 
 
+def ping(key: str, model: str = DEFAULT_MODEL) -> str:
+    """A minimal round-trip to confirm the key + network + omega wire work through the
+    Python client, BEFORE committing to a full analyze. Returns a short OK string;
+    raises OmegaError on auth/network/gateway failure (the diagnostic surfaces it)."""
+    text = call(
+        key,
+        "Reply with exactly the two characters: OK",
+        [{"role": "user", "content": "ping"}],
+        model=model,
+        max_tokens=16,
+    )
+    return f"gateway reachable ({model}): {text.strip()[:24]!r}"
+
+
 def image_block(png_or_jpeg_b64: str, media_type: str = "image/png") -> dict[str, Any]:
     return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": png_or_jpeg_b64}}
 

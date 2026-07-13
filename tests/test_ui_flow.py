@@ -139,6 +139,32 @@ def test_full_dock_flow(app, tmp_path, monkeypatch):
     d.close()
 
 
+def test_dock_diagnostics_runs_via_marshaller(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(dockmod, "IN_MAX", True)
+    monkeypatch.setattr(dockmod.maxscene, "renderer_name", lambda: "V_Ray_7")
+    monkeypatch.setattr(dockmod.maxscene, "pull_settings",
+                        lambda: {"params": {"sun.turbidity": 3.0}, "renderer": "V_Ray_7", "missing": []})
+    monkeypatch.setattr(dockmod.maxscene, "collect_census",
+                        lambda: {"is_vray": True, "renderer": "V_Ray_7", "lights": [{"name": "L", "on": True}],
+                                 "suns": [{"name": "S", "on": True}], "cameras": [{"name": "c", "class": "VRayPhysicalCamera", "exposure_on": True}],
+                                 "exposure_control": {"class": None, "active": False}, "gamma": 2.2, "color_mapping": {"type": "Reinhard"}})
+    monkeypatch.setattr(dockmod.maxscene, "apply_values",
+                        lambda moves: {"applied": [m["param"] for m in moves], "failed": [], "verified": [m["param"] for m in moves], "unverified": [], "manual": []})
+
+    d = dockmod.LightMatchDock()
+    d.key_edit.setText("")  # no key → the gateway check reports a note, not a failure
+    d._diagnostics()
+    _drain(d, timeout_ms=6000)
+    report = d.warn_label.text()
+    assert "checks passed" in report
+    assert "✓ Main-thread marshaller" in report        # the marshaller ran (worker→main)
+    assert "✓ Scene census" in report or "Scene census" in report
+    assert "no key yet" in report                        # gateway check without a key
+    d.close()
+
+
 def test_dock_guards_without_inputs(app, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")

@@ -173,13 +173,45 @@ def depth_block(
     )
 
 
+# SANITY GATE: the Z pass is best-effort (a render element that may come back empty,
+# constant, or — if the wrong channel is read — a copy of the beauty). Depth evidence
+# is a BONUS signal; a bad Z read must never MISLEAD the model. So we only emit depth
+# when the Z field (a) has real front-to-back variation and (b) is not literally the
+# beauty pass (normalized element-wise near-identical to luminance). Below either bar →
+# no depth block. The identity check (not correlation) avoids false-rejecting real depth
+# that merely trends with brightness (near = bright is common and legitimate).
+Z_MIN_SPAN_ABS = 1e-3        # absolute Z range floor — a constant frame has no depth
+Z_BEAUTY_IDENTITY = 0.02     # mean |z_norm − lum_norm| below this ⇒ Z is the beauty
+
+
+def _norm01(a: np.ndarray) -> np.ndarray:
+    lo, hi = float(a.min()), float(a.max())
+    return (a - lo) / (hi - lo) if hi > lo else np.zeros_like(a)
+
+
+def z_pass_is_usable(cur_lum: np.ndarray, cur_z: np.ndarray, alpha: Optional[np.ndarray] = None) -> bool:
+    """Reject a Z pass with no depth variation, or one that IS the beauty pass."""
+    counted = _counted_mask(cur_z, alpha)
+    z = np.asarray(cur_z, dtype=np.float64).ravel()[counted]
+    lum = np.asarray(cur_lum, dtype=np.float64).ravel()[counted]
+    if z.size < 4 * MIN_SIDE_PIXELS:
+        return False
+    if float(z.max()) - float(z.min()) <= Z_MIN_SPAN_ABS:
+        return False  # constant depth — unusable
+    # Is the "Z" actually the beauty pass? Compare normalized fields element-wise.
+    if float(np.mean(np.abs(_norm01(z) - _norm01(lum)))) < Z_BEAUTY_IDENTITY:
+        return False
+    return True
+
+
 def depth_evidence(
     cur_lum: np.ndarray,
     cur_z: Optional[np.ndarray],
     alpha: Optional[np.ndarray] = None,
 ) -> Optional[dict]:
     """Convenience bundle: {bands, separation_stops, haze} for the current render, or
-    None when there is no usable Z pass (missing, shape-mismatched, or all non-finite)."""
+    None when there is no usable Z pass (missing, shape-mismatched, all non-finite, or
+    it fails the sanity gate — constant / beauty-mirroring)."""
     if cur_z is None:
         return None
     cur_lum = np.asarray(cur_lum, dtype=np.float64)
@@ -187,6 +219,8 @@ def depth_evidence(
     if cur_lum.shape != cur_z.shape:
         return None
     if not np.isfinite(cur_z).any():
+        return None
+    if not z_pass_is_usable(cur_lum, cur_z, alpha):
         return None
     bands = z_band_stats(cur_lum, cur_z, 4, alpha)
     if not bands:
