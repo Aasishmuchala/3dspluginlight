@@ -1,0 +1,20 @@
+-- ALC Security Tool 1.3 enabled.
+-- ALC2 Security Tool 1.3 enabled.
+-- PhysXPluginMfx Security Tool 1.3 enabled.
+-- PhysXPluginMfx2 Security Tool 1.1 enabled.
+-- CRP Security Tool 1.1 enabled.
+-- ADSL Security Tool 1.1 enabled.
+-- MSCPROP Security Tool 1.0 enabled.
+
+LightMatch smoke: executing C:\Users\aasis\lightmatch-max\scripts\smoke_max.py
+renderer: V_Ray_7__update_3_DR2
+pulled 1 params, missing 14, counts {'suns': 0, 'vrayLights': 0, 'physCams': 0}
+apply: {'applied': ['sun.turbidity'], 'failed': [], 'manual': []}
+turbidity before=None set=3.299999952316284 after-undo=None
+MAX_SMOKE_OK
+LightMatch smoke: python returned.
+-- ALC Security Tool 1.3 disabled.
+-- ALC2 Security Tool 1.3 disabled.
+-- PhysXPluginMfx Security Tool 1.3 disabled.
+-- CRP Security Tool 1.1 disabled.
+-- ADSL Security Tool 1.1 disabled.

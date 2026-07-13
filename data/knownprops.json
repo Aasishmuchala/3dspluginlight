@@ -1,0 +1,142 @@
+{
+ "known_props": {
+  "sun.enabled": {
+   "node": "sun",
+   "prop": "enabled",
+   "type": "bool"
+  },
+  "sun.intensity_mult": {
+   "node": "sun",
+   "prop": "intensity_multiplier",
+   "type": "float"
+  },
+  "sun.size_mult": {
+   "node": "sun",
+   "prop": "size_multiplier",
+   "type": "float"
+  },
+  "sun.turbidity": {
+   "node": "sun",
+   "prop": "turbidity",
+   "type": "float"
+  },
+  "sun.ozone": {
+   "node": "sun",
+   "prop": "ozone",
+   "type": "float"
+  },
+  "sun.invisible": {
+   "node": "sun",
+   "prop": "invisible",
+   "type": "bool"
+  },
+  "light.on": {
+   "node": "light",
+   "prop": "on",
+   "type": "bool"
+  },
+  "light.multiplier": {
+   "node": "light",
+   "prop": "multiplier",
+   "type": "float"
+  },
+  "light.invisible": {
+   "node": "light",
+   "prop": "invisible",
+   "type": "bool"
+  },
+  "fill.plane_intensity": {
+   "node": "plane",
+   "prop": "multiplier",
+   "type": "float"
+  },
+  "dome.intensity": {
+   "node": "dome",
+   "prop": "multiplier",
+   "type": "float"
+  },
+  "cam.iso": {
+   "node": "cam",
+   "prop": "ISO",
+   "type": "float"
+  },
+  "cam.fnumber": {
+   "node": "cam",
+   "prop": "f_number",
+   "type": "float"
+  },
+  "cam.shutter": {
+   "node": "cam",
+   "prop": "shutter_speed",
+   "type": "float"
+  },
+  "cm.type": {
+   "node": "renderer",
+   "prop": "colorMapping_type",
+   "type": "enum",
+   "options": {
+    "linear multiply": 0,
+    "exponential": 1,
+    "hsv exponential": 2,
+    "intensity exponential": 3,
+    "reinhard": 6
+   }
+  }
+ },
+ "prefix_scope": {
+  "cam": "camera",
+  "vfb": "camera",
+  "post": "camera",
+  "light": "local",
+  "fill": "local",
+  "ies": "local",
+  "lum": "local",
+  "sun": "global",
+  "dome": "global",
+  "env": "global",
+  "gi": "global",
+  "cm": "global",
+  "fog": "global",
+  "aerial": "global",
+  "clouds": "global",
+  "wet": "global",
+  "wind": "global",
+  "moon": "global",
+  "night": "global",
+  "amb": "global"
+ },
+ "match_threshold": 3,
+ "score_weights": {
+  "lum.p5": 3,
+  "lum.p50": 3,
+  "lum.p95": 3,
+  "lum.p25": 2,
+  "lum.p75": 2,
+  "lum.mean": 2,
+  "contrast.spread": 2,
+  "contrast.midSlope": 2,
+  "wb.warmthShadow": 2,
+  "wb.warmthHighlight": 2,
+  "wb.tint": 2,
+  "clip.hi": 1.5,
+  "clip.lo": 1.5,
+  "sat.mean": 1,
+  "grid.0": 0.5,
+  "grid.1": 0.5,
+  "grid.2": 0.5,
+  "grid.3": 0.5,
+  "grid.4": 0.5,
+  "grid.5": 0.5,
+  "grid.6": 0.5,
+  "grid.7": 0.5,
+  "grid.8": 0.5,
+  "grid.9": 0.5,
+  "grid.10": 0.5,
+  "grid.11": 0.5,
+  "grid.12": 0.5,
+  "grid.13": 0.5,
+  "grid.14": 0.5,
+  "grid.15": 0.5
+ },
+ "hist_bins": 1024
+}

@@ -1,0 +1,18 @@
+[project]
+name = "lightmatch-max"
+version = "0.1.0"
+description = "LightMatch inside 3ds Max — match your render's lighting to any reference, natively: grab the VFB, get an exact V-Ray recipe, apply it undoably, re-render, converge."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.24",
+  "Pillow>=10",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+ui = ["PySide6>=6.5"]  # ships inside 3ds Max 2025+; needed only for standalone UI dev
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

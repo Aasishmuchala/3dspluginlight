@@ -1,0 +1,5 @@
+renderer: V_Ray_7__update_3_DR2
+pulled 1 params, missing 14, counts {'suns': 0, 'vrayLights': 0, 'physCams': 0}
+apply: {'applied': ['sun.turbidity'], 'failed': [], 'manual': []}
+turbidity before=None set=3.299999952316284 after-undo=None
+MAX_SMOKE_OK
