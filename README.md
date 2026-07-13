@@ -74,7 +74,8 @@ source** — nothing is hand-copied, so the two products can never drift.
 
 ```
 python -m pip install -e .[dev,ui]
-pytest                                 # 44 tests: TS↔numpy parity, core, stress, offscreen dock flow
+pytest                                 # 85 core tests (TS↔numpy parity, engine, stress, census, autopilot)
+pytest -m ui                           # + 6 offscreen dock-flow tests (91 total; needs PySide6)
 python scripts/smoke_headless.py       # SMOKE_OK — core, anywhere
 ```
 
@@ -109,6 +110,12 @@ Run once inside a real Max session with a live key:
    OFF by default — it self-gates to the safe 8-bit path unless it detects true HDR
    pixels. Confirming the VFB channel is linear on your build is a one-time live check
    before trusting exact (vs. display-approximate) exposure/CCT.
+6. **Cinematic depth (optional):** tick **Cinematic depth** to render a V-Ray Z pass
+   alongside Analyze/Check and feed the model measured subject/background separation and
+   aerial haze. OFF by default (one extra render); a Z pass that isn't clean is skipped
+   automatically, so it never feeds guessed numbers.
+7. **Sessions:** **Sessions ▾** reopens any past session (its reference + last recipe) or
+   starts a new one — pick up an area you were matching yesterday without re-importing.
 
 Everything up to the live model round — including the main-thread marshalling and
 autopilot — is machine-proven headlessly.
@@ -119,15 +126,28 @@ Re-sync the brain after web-repo changes:
 cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-max/data
 ```
 
+## Status (v0.4)
+
+Second review pass on top of v0.3. Wires the two **dormant** features live: **Cinematic
+depth** (opt-in Z-pass evidence — subject separation + aerial haze — that degrades to
+absent, never to wrong numbers) and a **Sessions** picker (reopen a past session's
+reference + recipe, or start fresh). Hardens the plumbing: a timed-out main-thread call
+is now cancelled so a "failed" apply can't mutate the scene later; the depth pipeline is
+NaN-safe end-to-end (a single non-finite pixel no longer bypasses the beauty-identity
+gate or crashes band stats); the float grab is size-capped so a full-res frame can't
+stall the per-pixel read; and greyed-out buttons now say *why*. 91 pytest green (85 core
+deterministic + 6 offscreen dock-flow; the UI suite carries a documented PySide 6.11
+teardown flake and is excluded from the default run).
+
 ## Status (v0.3)
 
 Adds pre-test hardening on top of v0.2: an in-Max **diagnostics** self-test, a
 main-thread-marshaller **timeout** guard (no frozen Max), a depth-pass **sanity gate**
 (a bad Z read can't mislead the model), **Consensus ×3** (median-merge three analyses
 for a steadier first recipe), and a **float/EXR capture scaffold** (self-gating, OFF
-until a live calibration confirms the VFB channel is linear). 89 pytest green,
-`MAX_STRESS_OK` re-validated (consensus merged to the correct medians, diagnostics
-passed over real pymxs, float grab safely fell back).
+until a live calibration confirms the VFB channel is linear). `MAX_STRESS_OK` validated
+(consensus merged to the correct medians, diagnostics passed over real pymxs, float grab
+safely fell back).
 
 ## Status (v0.2)
 

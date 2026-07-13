@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..core import autopilot, data, engine, session as sess
+from ..core import autopilot, data, depth_evidence as depthmod, engine, session as sess
 from ..core.census_format import census_block, census_warnings, summarize_for_ui
 from ..core.metrics import match_percent
 from ..core.omega import DEFAULT_MODEL, OmegaError
@@ -82,6 +82,10 @@ class LightMatchDock(QtWidgets.QWidget):
     # 3dsmaxbatch is single-threaded).
     @QtCore.Slot(object)
     def _exec_main_call(self, call):
+        # If the caller already gave up (timeout), do NOT run the scene op — a timed-out
+        # apply must not mutate the scene later behind the user's back (found 2026-07-13).
+        if call.get("abandoned"):
+            return
         try:
             call["result"] = call["fn"]()
         except Exception as e:  # noqa: BLE001 — ferried back to the worker
@@ -97,9 +101,10 @@ class LightMatchDock(QtWidgets.QWidget):
     def _run_on_main(self, fn):
         if QtCore.QThread.currentThread() is self.thread():
             return fn()  # already on the main thread
-        call = {"fn": fn, "event": threading.Event(), "result": None, "error": None}
+        call = {"fn": fn, "event": threading.Event(), "result": None, "error": None, "abandoned": False}
         self._mainCall.emit(call)  # queued → runs in _exec_main_call on the main thread
         if not call["event"].wait(timeout=self.MAIN_CALL_TIMEOUT_S):
+            call["abandoned"] = True  # if it fires later, _exec_main_call skips it
             raise TimeoutError(
                 "3ds Max did not respond on the main thread within "
                 f"{self.MAIN_CALL_TIMEOUT_S}s — a render or dialog may be blocking it."
@@ -136,9 +141,13 @@ class LightMatchDock(QtWidgets.QWidget):
         self.grab_btn.clicked.connect(lambda: self._grab(base=True))
         self.render_btn = QtWidgets.QPushButton("Render view")
         self.render_btn.clicked.connect(lambda: self._render(base=True))
+        self.sessions_btn = QtWidgets.QPushButton("Sessions ▾")
+        self.sessions_btn.setToolTip("Reopen a past session (its reference + last recipe) or start a new one.")
+        self.sessions_btn.clicked.connect(self._open_sessions)
         io_row.addWidget(self.ref_btn)
         io_row.addWidget(self.grab_btn)
         io_row.addWidget(self.render_btn)
+        io_row.addWidget(self.sessions_btn)
         lay.addLayout(io_row)
 
         self.io_label = QtWidgets.QLabel("Load a reference, then grab your current render.")
@@ -173,6 +182,13 @@ class LightMatchDock(QtWidgets.QWidget):
         self.consensus_chk.setChecked(self.cfg.get("consensus", False))
         self.consensus_chk.toggled.connect(lambda *_: self._save_cfg())
         opt_row.addWidget(self.consensus_chk)
+        self.depth_chk = QtWidgets.QCheckBox("Cinematic depth")
+        self.depth_chk.setToolTip("Measure the render's depth structure from a V-Ray Z pass (subject/background "
+                                  "separation, aerial haze) and feed it to the model. Adds one extra render per "
+                                  "Analyze/Check; skipped automatically if a clean Z pass can't be produced.")
+        self.depth_chk.setChecked(self.cfg.get("depth", False))
+        self.depth_chk.toggled.connect(lambda *_: self._save_cfg())
+        opt_row.addWidget(self.depth_chk)
         opt_row.addStretch(1)
         self.diag_btn = QtWidgets.QPushButton("Run diagnostics")
         self.diag_btn.setToolTip("10-second self-test of the Max + gateway plumbing — run this first.")
@@ -242,6 +258,11 @@ class LightMatchDock(QtWidgets.QWidget):
             for b in (self.grab_btn, self.render_btn, self.apply_btn, self.check_btn, self.autopilot_btn):
                 b.setEnabled(False)
             self.status.setText("Standalone preview (no pymxs) — Max-only actions disabled.")
+        else:
+            # In-Max first run: Apply / Check / Autopilot start disabled (no recipe yet).
+            # Say WHY, so a greyed-out button reads as a next step, not a broken control.
+            self.status.setText("Load a reference, grab your render, then Analyze — "
+                                "Apply / Check / Autopilot unlock once a recipe is on the table.")
 
     def _cancel_autopilot(self):
         self._ap_cancel = True
@@ -252,15 +273,19 @@ class LightMatchDock(QtWidgets.QWidget):
         self.cfg["key"] = self.key_edit.text().strip()
         self.cfg["model"] = self.model_box.currentText()
         self.cfg["consensus"] = self.consensus_chk.isChecked()
+        self.cfg["depth"] = self.depth_chk.isChecked()
         sess.save_config(self.cfg)
 
     def _context(self) -> dict[str, str]:
         return {"scene": self.scene_box.currentText(), "time": self.time_box.currentText(), "rig": self.rig_box.currentText()}
 
     def _update_buttons(self, busy: bool):
-        # Reference + Analyze are always usable (Analyze guards on inputs/key itself).
+        # Reference + Analyze + Sessions are always usable (Analyze guards on inputs/key
+        # itself). Sessions is disabled only while busy — swapping the session mid-run
+        # would pull state out from under the worker.
         self.ref_btn.setEnabled(not busy)
         self.analyze_btn.setEnabled(not busy)
+        self.sessions_btn.setEnabled(not busy)
         # Scene I/O + diagnostics need Max.
         for b in (self.grab_btn, self.render_btn, self.diag_btn):
             b.setEnabled(not busy and IN_MAX)
@@ -340,6 +365,81 @@ class LightMatchDock(QtWidgets.QWidget):
             return
         self._io_note()
 
+    # -- sessions: reopen past work (reference + last recipe) or start fresh -----------
+    def _open_sessions(self):
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("＋ New session").triggered.connect(self._new_session)
+        items = sess.list_sessions()
+        if items:
+            menu.addSeparator()
+        for s in items[:30]:  # newest first; cap the list so the menu stays usable
+            best = s.get("best_score")
+            pct = f"{match_percent(best)}% best" if isinstance(best, (int, float)) else "no score yet"
+            label = f"{s.get('created', '?')}   ·   {s.get('attempts', 0)} attempt(s)   ·   {pct}"
+            if s.get("lock_globals"):
+                label += "   · 🔒 area"
+            sid = s.get("id", "")
+            menu.addAction(label).triggered.connect(lambda _=False, i=sid: self._load_session(i))
+        if not items:
+            a = menu.addAction("No saved sessions yet")
+            a.setEnabled(False)
+        menu.popup(QtGui.QCursor.pos())  # non-blocking; actions fire via triggered
+
+    def _new_session(self):
+        self.session = sess.new_session(TARGET)
+        self.base_capture = None
+        self._has_recipe = False
+        self.table.setRowCount(0)
+        self.score_label.setText("")
+        self.withheld_label.setText("")
+        self.warn_label.setText("")
+        self.census_label.setText("")
+        self._io_note()
+        self._update_buttons(busy=False)
+        self.status.setText("New session — load a reference and grab a render to begin.")
+
+    def _load_session(self, session_id: str):
+        s = sess.load(session_id)
+        if not s:
+            self.status.setText("Couldn't load that session — its file is missing.")
+            return
+        self.session = s
+        # The live scene may have moved on since this session was saved, so DON'T pretend
+        # we have a current render — force a fresh grab before Apply/Check can score.
+        self.base_capture = None
+        ctx = s.get("context") or {}
+        self.scene_box.setCurrentText(ctx.get("scene", ""))
+        self.time_box.setCurrentText(ctx.get("time", ""))
+        self.rig_box.setCurrentText(ctx.get("rig", ""))
+        self.lock_chk.setChecked(bool(s.get("lock_globals")))
+        # Restore the most recent move card: the latest correction if there is one, else
+        # the original recipe — so the artist sees exactly where they left off.
+        atts = s.get("attempts") or []
+        last_moves = atts[-1].get("correction", {}).get("moves") if atts else None
+        recipe_vals = (s.get("recipe") or {}).get("values")
+        if isinstance(last_moves, list) and last_moves:
+            self._fill_table(last_moves, val_key="to")
+            self._has_recipe = True
+        elif isinstance(recipe_vals, list) and recipe_vals:
+            self._fill_table(recipe_vals, val_key="set")
+            self._has_recipe = True
+        else:
+            self.table.setRowCount(0)
+            self._has_recipe = False
+        best = min((a["score"] for a in atts if isinstance(a.get("score"), (int, float))), default=None)
+        if best is not None:
+            self.score_label.setText(f"{match_percent(best)}% best (loaded)")
+            self.score_label.setStyleSheet(f"color:{AMBER};")
+        else:
+            self.score_label.setText("")
+        self.withheld_label.setText("")
+        self.warn_label.setText("")
+        self.census_label.setText("")
+        self._io_note()
+        self._update_buttons(busy=False)
+        n = s.get("attempt_count", 0)
+        self.status.setText(f"Loaded session ({n} attempt(s)) — grab a fresh render, then Check to continue.")
+
     def _grab(self, base: bool):
         try:
             img = maxvfb.grab_vfb()
@@ -388,6 +488,26 @@ class LightMatchDock(QtWidgets.QWidget):
             pass
         return live, renderer, census_text, warnings
 
+    def _depth_text(self) -> Optional[str]:
+        """Cinematic-depth prompt block (opt-in). Renders a V-Ray Z pass on the MAIN
+        thread, measures the render's depth structure, and returns the prompt text — or
+        None when depth is off, not in Max, or the Z pass isn't usable. NEVER raises and
+        never returns partial/garbage: a bad Z read degrades to absent, not to wrong
+        numbers the model would trust."""
+        if not IN_MAX or not self.depth_chk.isChecked():
+            return None
+        try:
+            pair = maxvfb.grab_depth_evidence()
+            if not pair:
+                return None
+            lum, z = pair
+            ev = depthmod.depth_evidence(lum, z)
+            if not ev:
+                return None
+            return depthmod.depth_block(ev["bands"], ev["separation_stops"], ev["haze"])
+        except Exception:
+            return None
+
     def _show_warnings(self, warnings: list[dict]) -> bool:
         """Render pre-flight warnings; return True if a BLOCK should stop the run."""
         if not warnings:
@@ -415,11 +535,18 @@ class LightMatchDock(QtWidgets.QWidget):
         self.session["_renderer"] = renderer
         ref, base, ctx = self.session["ref"], self.base_capture, self._context()
         consensus = self.consensus_chk.isChecked()
+        # Depth grab is a MAIN-THREAD render — do it here, before the worker spawns, and
+        # pass the finished text in (like census_text). None when off / not usable.
+        if self.depth_chk.isChecked() and IN_MAX:
+            self._busy(True, "Rendering depth pass…")
+            QtWidgets.QApplication.processEvents()
+        depth_text = self._depth_text()
+        self.session["_depth_on"] = bool(depth_text)
         # engine.analyze does NO pymxs (evidence + gateway + validate) — safe on a worker.
         self._busy(True, "Reading the light" + (" (consensus ×3)…" if consensus else "…"))
         self._spawn(
             lambda: engine.analyze(key, model, TARGET, ref, base, ctx, lock, live, renderer,
-                                   census_text=census_text, consensus=consensus),
+                                   census_text=census_text, consensus=consensus, depth_text=depth_text),
             self._analyze_done,
         )
 
@@ -594,11 +721,14 @@ class LightMatchDock(QtWidgets.QWidget):
             return
 
         census_text = self.session.get("_census_text")
+        # Depth pass (main-thread render), when opted in — same as Analyze.
+        depth_text = self._depth_text()
         # Only the gateway round runs on the worker (no pymxs here).
         self._busy(True, f"Checking attempt {n}…")
         self._spawn(
             lambda: engine.add_attempt(key, model, TARGET, ref, attempt, n, history, ctx,
-                                       lock, live, renderer, census_text=census_text),
+                                       lock, live, renderer, census_text=census_text,
+                                       depth_text=depth_text),
             self._check_done,
         )
 
@@ -711,6 +841,29 @@ class LightMatchDock(QtWidgets.QWidget):
             f"{len(withheld)} scene-global move(s) withheld — globals locked."
             if withheld else ""
         )
+
+    # -- clean shutdown: cancel any run and JOIN every worker thread before the widget
+    # (and, in tests, the QApplication) is torn down. A QThread still running — or a
+    # QThread object destroyed while its OS thread lives — is an access-violation crash
+    # at interpreter teardown (found 2026-07-13; pytest passed but the process aborted).
+    def _shutdown(self):
+        self._ap_cancel = True
+        for th in list(self._threads):
+            try:
+                th.quit()
+                th.wait(3000)
+            except Exception:
+                pass
+        self._threads.clear()
+        self._workers.clear()
+        try:
+            QtWidgets.QApplication.processEvents()  # flush pending deleteLater
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self._shutdown()
+        super().closeEvent(event)
 
 
 _dock_instance: Optional[LightMatchDock] = None

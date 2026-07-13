@@ -13,6 +13,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+pytestmark = pytest.mark.ui  # excluded from the default run (PySide6 teardown quirk)
+
 pytest.importorskip("PySide6")
 from PySide6 import QtCore, QtWidgets  # noqa: E402
 
@@ -21,10 +23,39 @@ from lightmatch_max.core import session as sess  # noqa: E402
 from lightmatch_max.ui import dock as dockmod  # noqa: E402
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def app():
+    # SESSION scope + never destroy the QApplication: a module-scoped app that is torn
+    # down mid-suite while any dock's QThread lingers crashes the process on PySide6 6.11
+    # (access violation). The dock's closeEvent joins its threads; this app outlives them.
     a = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     yield a
+
+
+@pytest.fixture
+def make_dock(app):
+    """Factory that tracks every dock it creates and GUARANTEES teardown (join threads,
+    delete the C++ object, flush events) after the test — even on failure — so no Qt
+    object survives into the next test / interpreter teardown."""
+    created = []
+
+    def _make():
+        d = dockmod.LightMatchDock()
+        created.append(d)
+        return d
+
+    yield _make
+    import gc
+    for d in created:
+        try:
+            d._shutdown()
+            d.deleteLater()
+        except Exception:
+            pass
+    for _ in range(3):
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 20)
+    gc.collect()
+    QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 20)
 
 
 def _pil(w=48, h=32, fill=(180, 120, 60)):
@@ -63,7 +94,7 @@ def _drain(widget, timeout_ms=4000):
     raise TimeoutError("worker did not finish")
 
 
-def test_full_dock_flow(app, tmp_path, monkeypatch):
+def test_full_dock_flow(make_dock, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
 
@@ -102,7 +133,7 @@ def test_full_dock_flow(app, tmp_path, monkeypatch):
 
     monkeypatch.setattr(dockmod.maxscene, "apply_values", fake_apply)
 
-    d = dockmod.LightMatchDock()
+    d = make_dock()
     d.key_edit.setText("oc_stub")
     d.lock_chk.setChecked(True)
 
@@ -136,10 +167,9 @@ def test_full_dock_flow(app, tmp_path, monkeypatch):
     assert corr_controls == ["cam.iso"]
     # session persisted with the attempt
     assert len(sess.list_sessions()) >= 1
-    d.close()
 
 
-def test_dock_diagnostics_runs_via_marshaller(app, tmp_path, monkeypatch):
+def test_dock_diagnostics_runs_via_marshaller(make_dock, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(dockmod, "IN_MAX", True)
@@ -153,7 +183,7 @@ def test_dock_diagnostics_runs_via_marshaller(app, tmp_path, monkeypatch):
     monkeypatch.setattr(dockmod.maxscene, "apply_values",
                         lambda moves: {"applied": [m["param"] for m in moves], "failed": [], "verified": [m["param"] for m in moves], "unverified": [], "manual": []})
 
-    d = dockmod.LightMatchDock()
+    d = make_dock()
     d.key_edit.setText("")  # no key → the gateway check reports a note, not a failure
     d._diagnostics()
     _drain(d, timeout_ms=6000)
@@ -162,26 +192,24 @@ def test_dock_diagnostics_runs_via_marshaller(app, tmp_path, monkeypatch):
     assert "✓ Main-thread marshaller" in report        # the marshaller ran (worker→main)
     assert "✓ Scene census" in report or "Scene census" in report
     assert "no key yet" in report                        # gateway check without a key
-    d.close()
 
 
-def test_dock_guards_without_inputs(app, tmp_path, monkeypatch):
+def test_dock_guards_without_inputs(make_dock, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
-    d = dockmod.LightMatchDock()
+    d = make_dock()
     d._analyze()  # no reference/base → guarded, no crash
     assert "reference" in d.status.text().lower() or "grab" in d.status.text().lower()
-    d.close()
 
 
-def test_run_on_main_marshals_pymxs_to_the_gui_thread(app, tmp_path, monkeypatch):
+def test_run_on_main_marshals_pymxs_to_the_gui_thread(make_dock, tmp_path, monkeypatch):
     """The critical safety guarantee: a pymxs call issued from a WORKER thread runs on
     the MAIN (GUI) thread via _run_on_main — pymxs is main-thread-only."""
     import threading
 
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
-    d = dockmod.LightMatchDock()
+    d = make_dock()
     main_tid = threading.get_ident()
     captured = {}
 
@@ -198,10 +226,44 @@ def test_run_on_main_marshals_pymxs_to_the_gui_thread(app, tmp_path, monkeypatch
     assert captured["result"] == "ok"
     assert captured["worker_on"] != main_tid          # the job really ran off-thread
     assert captured["ran_on"] == main_tid             # but the pymxs op ran on main
-    d.close()
 
 
-def test_dock_autopilot_runs_and_reports(app, tmp_path, monkeypatch):
+def test_session_picker_reloads_reference_and_recipe(make_dock, tmp_path, monkeypatch):
+    """Reopening a saved session restores its reference, context, lock, and last move
+    card onto a fresh dock — and clears base_capture so the artist must re-grab (the live
+    scene may have moved on). The MAJOR usability gap: sessions were write-only before."""
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+
+    s = sess.new_session("vray7max")
+    s["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    s["recipe"] = {"values": [{"param": "cam.iso", "set": 260, "from": 320, "why": "x"}]}
+    s["context"] = {"scene": "interior", "time": "dusk", "rig": "both"}
+    s["lock_globals"] = True
+    sess.push_attempt(s, 8.0, {"moves": [{"param": "cam.iso", "to": 240, "from": 260, "why": "trim"}],
+                               "status": "continue"})
+    sess.save(s)
+
+    d = make_dock()
+    d.base_capture = _pil()  # pretend a stale render is loaded
+    assert d.session["id"] != s["id"]
+
+    d._load_session(s["id"])
+
+    assert d.session["id"] == s["id"]
+    assert d.session.get("ref") is not None          # reference restored
+    assert d.lock_chk.isChecked() is True            # lock restored
+    assert d.scene_box.currentText() == "interior"   # context restored
+    assert d.time_box.currentText() == "dusk"
+    assert d._has_recipe is True
+    assert d.base_capture is None                     # stale render cleared → must re-grab
+    # the table shows the LATEST correction move, not the original recipe
+    params = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]
+    assert params == ["cam.iso"]
+    assert d.table.item(0, 2).text() == "260 → 240"  # from → to of the correction
+
+
+def test_dock_autopilot_runs_and_reports(make_dock, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(dockmod, "IN_MAX", True)
@@ -217,7 +279,7 @@ def test_dock_autopilot_runs_and_reports(app, tmp_path, monkeypatch):
 
     monkeypatch.setattr(dockmod.engine, "add_attempt", fake_add_attempt)
 
-    d = dockmod.LightMatchDock()
+    d = make_dock()
     d.key_edit.setText("oc_stub")
     d.session["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
     d.session["recipe"] = {"values": [{"param": "cam.iso", "set": 300, "from": 320}]}
@@ -226,4 +288,3 @@ def test_dock_autopilot_runs_and_reports(app, tmp_path, monkeypatch):
     d._autopilot()
     _drain(d, timeout_ms=6000)
     assert "MATCHED" in d.score_label.text() or "matched" in d.status.text().lower()
-    d.close()

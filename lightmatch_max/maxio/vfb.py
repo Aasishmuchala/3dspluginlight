@@ -133,10 +133,17 @@ def grab_float_luminance(width: int = 0, height: int = 0):
     try:
         import numpy as np
         rt = _rt()
-        if width and height:
-            bmp = rt.render(outputSize=rt.Point2(width, height), vfb=False)
-        else:
-            bmp = rt.render(vfb=False)
+        # HARD SIZE CAP: reading pixels via pymxs getPixels is a per-pixel Python loop, so
+        # a full 1080p+ frame would stall for minutes. Exposure/CCT anchors need only a
+        # small sample — render at <= FLOAT_MAX_EDGE on the long side.
+        FLOAT_MAX_EDGE = 256
+        if not (width and height):
+            width, height = FLOAT_MAX_EDGE, int(FLOAT_MAX_EDGE * 3 / 4)
+        long_edge = max(width, height)
+        if long_edge > FLOAT_MAX_EDGE:
+            s = FLOAT_MAX_EDGE / long_edge
+            width, height = max(1, int(width * s)), max(1, int(height * s))
+        bmp = rt.render(outputSize=rt.Point2(width, height), vfb=False)
         w, h = int(bmp.width), int(bmp.height)
         rows = []
         for y in range(h):
@@ -161,6 +168,75 @@ def grab_float_luminance(width: int = 0, height: int = 0):
         return None
 
 
+def grab_depth_evidence(width: int = 0, height: int = 0):
+    """Best-effort CINEMATIC-DEPTH pair for engine.depth_text: render once with a
+    VRayZDepth element and return (lum, z) as same-shape H×W float arrays — lum is the
+    beauty's luminance (0..1), z is the depth (larger = farther). Both are read from
+    saved PNGs (PIL 'L'/'F'), so no slow per-pixel loop. Returns None on ANY failure, so
+    depth simply degrades to absent — it must never feed the model wrong numbers.
+
+    Capped small on the long edge: depth structure (bands / separation / haze) is a
+    statistical read, so a downscaled pass is plenty and keeps the extra render cheap.
+    """
+    try:
+        import numpy as np
+        rt = _rt()
+        DEPTH_MAX_EDGE = 512
+        if not (width and height):
+            width, height = DEPTH_MAX_EDGE, int(DEPTH_MAX_EDGE * 3 / 4)
+        long_edge = max(width, height)
+        if long_edge > DEPTH_MAX_EDGE:
+            s = DEPTH_MAX_EDGE / long_edge
+            width, height = max(1, int(width * s)), max(1, int(height * s))
+
+        mgr = rt.maxOps.GetCurRenderElementMgr(0)
+        if mgr is None:
+            return None
+        zel, added = None, False
+        for i in range(int(rt.execute("(maxOps.GetCurRenderElementMgr 0).NumRenderElements()"))):
+            el = mgr.GetRenderElement(i)
+            if "zdepth" in str(rt.classOf(el)).lower():
+                zel = el
+                break
+        if zel is None:
+            zcls = getattr(rt, "VRayZDepth", None)
+            if zcls is None:
+                return None
+            zel = zcls()
+            try:
+                zel.zdepth_clamp = True
+                zel.zdepth_fromCamera = True
+            except Exception:
+                pass
+            mgr.AddRenderElement(zel)
+            added = True
+        try:
+            zel.enabled = True
+        except Exception:
+            pass
+
+        beauty = rt.render(outputSize=rt.Point2(width, height), vfb=False)
+        zbmp = _try_render_element_bitmap(rt, zel)
+        if added:
+            try:
+                mgr.RemoveRenderElement(zel)
+            except Exception:
+                pass
+        if zbmp is None:
+            try:
+                rt.close(beauty)
+            except Exception:
+                pass
+            return None
+        lum = _bitmap_to_lum_array(rt, beauty, np)   # closes `beauty`
+        z = _bitmap_to_gray_array(rt, zbmp, np)
+        if lum.shape != z.shape:
+            return None  # size mismatch → unusable; skip depth
+        return lum, z
+    except Exception:
+        return None
+
+
 def _try_render_element_bitmap(rt, zel):
     for attr in ("bitmap", "renderbitmap"):
         b = None
@@ -178,3 +254,10 @@ def _bitmap_to_gray_array(rt, bmp, np):
     img = _bitmap_to_pil(rt, bmp)
     g = img.convert("F")  # 32-bit float grayscale
     return np.asarray(g, dtype=np.float64)
+
+
+def _bitmap_to_lum_array(rt, bmp, np):
+    """Read a Max bitmap (the beauty) into an H×W LUMINANCE array 0..1 via its saved PNG.
+    PIL 'L' is ITU-R 601 luma; /255 puts it in the same 0..1 space depth_evidence expects."""
+    img = _bitmap_to_pil(rt, bmp)
+    return np.asarray(img.convert("L"), dtype=np.float64) / 255.0

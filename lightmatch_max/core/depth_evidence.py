@@ -25,10 +25,15 @@ SIGNAL_MIN = 1.0 / HIST_BINS
 MIN_SIDE_PIXELS = 100  # a near/far side below this has too little signal to trust
 
 
-def _counted_mask(z: np.ndarray, alpha: Optional[np.ndarray]) -> np.ndarray:
-    """Pixels that count: finite Z, and opaque when an alpha mask is supplied. Always
-    returned flat so callers can index the raveled arrays uniformly."""
+def _counted_mask(z: np.ndarray, alpha: Optional[np.ndarray], lum: Optional[np.ndarray] = None) -> np.ndarray:
+    """Pixels that count: finite Z, finite luminance (when given), and opaque when an
+    alpha mask is supplied. Always returned flat so callers can index the raveled arrays
+    uniformly. Excluding non-finite luminance HERE keeps every downstream stat (band
+    means, percentiles) safe — a single NaN/inf pixel would otherwise poison a band mean
+    and blow up js_round with 'cannot convert float NaN to integer'."""
     m = np.isfinite(np.asarray(z)).ravel()
+    if lum is not None:
+        m = m & np.isfinite(np.asarray(lum)).ravel()
     if alpha is not None:
         m = m & np.asarray(alpha).astype(bool).ravel()
     return m
@@ -51,7 +56,7 @@ def z_band_stats(
     returned list may be shorter than n_bands (e.g. uniform Z collapses to one band)."""
     lum = np.asarray(lum, dtype=np.float64).ravel()
     z = np.asarray(z, dtype=np.float64).ravel()
-    counted = _counted_mask(z, alpha).ravel()
+    counted = _counted_mask(z, alpha, lum).ravel()
     zc = z[counted]
     lc = lum[counted]
     total = zc.size
@@ -92,7 +97,7 @@ def _near_far(
     of counted pixels by Z."""
     lum = np.asarray(lum, dtype=np.float64).ravel()
     z = np.asarray(z, dtype=np.float64).ravel()
-    counted = _counted_mask(z, alpha).ravel()
+    counted = _counted_mask(z, alpha, lum).ravel()
     zc = z[counted]
     lc = lum[counted]
     if zc.size == 0:
@@ -191,7 +196,9 @@ def _norm01(a: np.ndarray) -> np.ndarray:
 
 def z_pass_is_usable(cur_lum: np.ndarray, cur_z: np.ndarray, alpha: Optional[np.ndarray] = None) -> bool:
     """Reject a Z pass with no depth variation, or one that IS the beauty pass."""
-    counted = _counted_mask(cur_z, alpha)
+    # Mask on finite Z AND finite luminance: a NaN in lum would make the beauty-identity
+    # mean-abs-diff NaN, and NaN < threshold is False — silently BYPASSING the gate.
+    counted = _counted_mask(cur_z, alpha, cur_lum)
     z = np.asarray(cur_z, dtype=np.float64).ravel()[counted]
     lum = np.asarray(cur_lum, dtype=np.float64).ravel()[counted]
     if z.size < 4 * MIN_SIDE_PIXELS:
