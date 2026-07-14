@@ -1,9 +1,11 @@
 """In-Max smoke — validates the pymxs surface (renderer reachable, KNOWN_PROPS pull,
 apply inside an undo record, undo round-trip, camera-scope Stage 1:
-list_cameras / set_active_camera / render_camera through a real camera, and Stage 3:
+list_cameras / set_active_camera / render_camera through a real camera, Stage 3:
 a lighting-snapshot Save-look/Restore-look round-trip — pull_settings ->
 scope.snapshot_to_rows -> apply_values, asserting the restore re-applies the saved
-value at the picked camera). Run headlessly via the .ms wrapper:
+value at the picked camera, and multi-camera exposure scoping: two VRayPhysicalCameras
+with distinct ISOs, asserting pull_settings(camera_name) reads the PICKED camera's cam.*
+and not the renderer's first-of-kind). Run headlessly via the .ms wrapper:
 
     powershell -File scripts/run_max_smoke.ps1     (or: 3dsmaxbatch scripts/run_smoke.ms)
 
@@ -42,6 +44,25 @@ def run() -> str:
         rt.execute("max undo")
         after_undo = scene.pull_settings()["params"].get("sun.turbidity")
         lines.append(f"turbidity before={before} set={after_set} after-undo={after_undo}")
+
+    # -- NON-FINITE WRITE-BOUNDARY GUARD ------------------------------------------------
+    # float() ACCEPTS "inf"/"1e999"/"nan" → non-finite floats. The reachable string-set
+    # path is gated upstream (engine.validate_items, fd3bbed); this certifies the
+    # apply_values boundary backstop directly against real pymxs: a non-finite `set` must
+    # be reported FAILED and must NOT mutate the live node. sun.turbidity was created by
+    # the apply above, so it is pullable here.
+    guard_before = scene.pull_settings()["params"].get("sun.turbidity")
+    if guard_before is None:
+        lines.append("nonfinite guard: sun.turbidity unavailable — skipped")
+    else:
+        for bad in (float("inf"), float("nan")):
+            gres = scene.apply_values([{"param": "sun.turbidity", "set": bad}])
+            assert "sun.turbidity" in gres["failed"], f"non-finite {bad} not failed: {gres}"
+            assert "sun.turbidity" not in gres["applied"], f"non-finite {bad} reached apply: {gres}"
+        guard_after = scene.pull_settings()["params"].get("sun.turbidity")
+        assert guard_after is not None and abs(guard_after - guard_before) < 1e-4, \
+            f"non-finite set mutated sun.turbidity: before={guard_before} after={guard_after}"
+        lines.append(f"nonfinite guard: inf/nan -> failed, sun.turbidity unchanged at {guard_after}")
 
     # -- CAMERA SCOPE (Stage 1) — certify list/set-active/render-through the camera -----
     # These exercise the camera-scoped picker plumbing against REAL pymxs. A genuine
@@ -135,6 +156,48 @@ def run() -> str:
             f"stage3 restore: {scalar_key} back to {restored} (snapshot {orig}); "
             f"verified={scalar_key in res['verified']}, {len(rows)} rows applied via snapshot_to_rows({cam_name!r})"
         )
+
+    # -- MULTI-CAMERA EXPOSURE SCOPING — pull_settings(camera_name) reads the PICKED -----
+    # camera's cam.* (ISO/f/shutter), not the renderer's first-of-kind. This is the ONLY
+    # place the bug is reachable: it depends on VRayPhysicalCamera class-instance ordering,
+    # which headless mocks can't reproduce. Build two phys cams with DISTINCT ISOs and
+    # assert a scoped pull returns each camera's OWN iso. UNGUARDED — a genuine failure
+    # (or the wrong iso) propagates and FAILS the smoke.
+    def _ensure_exp_cam(name, iso):
+        node = rt.getNodeByName(name)
+        if node is None or str(rt.classOf(node)) != "VRayPhysicalCamera":
+            node = rt.VRayPhysicalCamera()
+            node.name = name
+        node.ISO = float(iso)
+        try:
+            node.exposure = True  # exposure ON so ISO is the live control (matches apply)
+        except Exception:
+            pass
+        return node
+
+    _ensure_exp_cam("LM_ExpCamA", 100.0)
+    _ensure_exp_cam("LM_ExpCamB", 800.0)
+    iso_a = scene.pull_settings("LM_ExpCamA")["params"].get("cam.iso")
+    iso_b = scene.pull_settings("LM_ExpCamB")["params"].get("cam.iso")
+    iso_firstkind = scene.pull_settings()["params"].get("cam.iso")
+    lines.append(f"multicam: scoped A={iso_a} B={iso_b}; first-of-kind={iso_firstkind}")
+    # The scoped reads must land on each camera's OWN iso. If camera_name were ignored
+    # (the bug), BOTH would equal the first-of-kind iso — so at least one of these fails.
+    assert iso_a is not None and abs(iso_a - 100.0) < 1e-3, \
+        f"scoped pull of LM_ExpCamA read {iso_a}, expected 100 (camera_name not honored?)"
+    assert iso_b is not None and abs(iso_b - 800.0) < 1e-3, \
+        f"scoped pull of LM_ExpCamB read {iso_b}, expected 800 (camera_name not honored?)"
+    # Sanity: the unscoped pull reads exactly one of the two — proving scoping was not a
+    # no-op (one scoped read necessarily differs from the first-of-kind value).
+    assert iso_firstkind is not None and (
+        abs(iso_firstkind - iso_a) < 1e-3 or abs(iso_firstkind - iso_b) < 1e-3
+    ), f"first-of-kind iso {iso_firstkind} matched neither camera (100/800)"
+    # A missing/renamed camera must NOT silently fall back to first-of-kind — cam.* goes
+    # to `missing` instead (honest, never a wrong-camera read).
+    gone = scene.pull_settings("__no_such_camera__")
+    assert "cam.iso" in gone["missing"] and "cam.iso" not in gone["params"], \
+        f"unresolved camera name should mark cam.iso missing, got params={gone['params'].get('cam.iso')}"
+    lines.append("multicam: unresolved name -> cam.iso in missing (no wrong-camera fallback)")
 
     lines.append("MAX_SMOKE_OK")
     return "\n".join(lines)

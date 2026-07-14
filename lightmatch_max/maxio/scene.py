@@ -11,6 +11,7 @@ LightMatchMaxError elsewhere."""
 from __future__ import annotations
 
 import fnmatch
+import math
 from typing import Any, Optional
 
 from ..core.data import knownprops
@@ -128,10 +129,21 @@ def _discover_renderer_prop(rt, prop: str) -> Optional[str]:
     return None
 
 
-def pull_settings() -> dict[str, Any]:
+def pull_settings(camera_name: Optional[str] = None) -> dict[str, Any]:
     """Read every KNOWN_PROPS value the scene can provide → the CURRENT SCENE
     SETTINGS block (ground truth `from` values). Per-property try/except: one odd
-    node never sinks the pull."""
+    node never sinks the pull.
+
+    `camera_name` (optional): read cam.* (ISO / f-number / shutter) from the PICKED
+    physical camera by name instead of the renderer's first-of-kind — so a scene with
+    2+ VRayPhysicalCameras captures the exposure of the camera the user actually
+    selected, and Save look (pull) / Restore look (apply, which stamps the same
+    camera's node via scope.stamp_camera_node) reference the SAME camera. When it is
+    falsy, cam.* falls back to first-of-kind — the historical behavior, so every
+    existing call is unaffected. When it is given but the named camera can't be
+    resolved (renamed/deleted, or not a physical camera), cam.* lands in `missing`
+    rather than silently reading the wrong camera — mirroring apply_values' honest
+    named-node failure."""
     rt = _rt()
     props: dict[str, dict] = knownprops()["known_props"]
     params: dict[str, Any] = {}
@@ -140,7 +152,10 @@ def pull_settings() -> dict[str, Any]:
     for param, m in props.items():
         node_key = m["node"]
         if node_key not in nodes_cache:
-            nodes_cache[node_key] = _node_for(rt, node_key, create=False)
+            if node_key == "cam" and camera_name:
+                nodes_cache[node_key] = _node_by_name(rt, camera_name)
+            else:
+                nodes_cache[node_key] = _node_for(rt, node_key, create=False)
         node = nodes_cache[node_key]
         if node is None:
             missing.append(param)
@@ -229,6 +244,14 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     val: Any = bool(raw) if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "on", "yes")
                 elif m["type"] == "float":
                     val = float(raw)  # non-numeric raises → failed
+                    # float() ACCEPTS "inf"/"1e999"/"nan" → non-finite floats. The
+                    # reachable string-set path is already gated upstream (engine
+                    # validate_items, commit fd3bbed), but this is the write-boundary
+                    # backstop: any caller that bypasses validation still can't
+                    # setattr a non-finite value onto a live V-Ray node.
+                    if not math.isfinite(val):
+                        failed.append(param)
+                        continue
                 else:  # enum — only a known option string maps to its int
                     options = {k.lower(): int(x) for k, x in m.get("options", {}).items()}
                     key = str(raw).strip().lower()

@@ -592,13 +592,20 @@ class LightMatchDock(QtWidgets.QWidget):
             self.status.setText("Auto lighting: " + " · ".join(bits) + ".")
 
     # -- Stage 3: per-camera lighting snapshots (save-on-leave / restore-on-enter) --------
-    def _snapshot_params(self):
+    def _snapshot_params(self, camera_name=None):
         """Pull the scene's current lighting into a {param: value} dict (the snapshot).
-        Main-thread pymxs. Returns None (never raises) outside Max or on failure."""
+        Main-thread pymxs. Returns None (never raises) outside Max or on failure.
+
+        cam.* (ISO/f-number/shutter) is read from the target camera so the snapshot — and
+        thus Save look / Restore look — references the same physical camera the moves land
+        on. camera_name defaults to the ACTIVE picker (the Save-look case); pass an explicit
+        name for save-on-leave, which must snapshot the OUTGOING camera even though the
+        picker has already advanced to the incoming one ('' → default/first-of-kind slot)."""
         if not IN_MAX:
             return None
+        cam = self._active_camera() if camera_name is None else (camera_name or None)
         try:
-            return maxscene.pull_settings().get("params") or {}
+            return maxscene.pull_settings(cam).get("params") or {}
         except Exception:
             return None
 
@@ -635,7 +642,9 @@ class LightMatchDock(QtWidgets.QWidget):
     def _auto_save_look(self, cam_name: str) -> bool:
         """save-on-leave: snapshot the OUTGOING camera's lighting into its slot. Returns
         True if a look was captured (so the switch can disclose the overwrite)."""
-        params = self._snapshot_params()
+        # Scope the pull to the OUTGOING camera explicitly — the picker has already moved
+        # to the incoming one, so self._active_camera() would read the wrong exposure.
+        params = self._snapshot_params(cam_name)
         if params:
             sess.camera_slot(self.session, cam_name or "")["lighting_snapshot"] = params
             return True
@@ -743,7 +752,9 @@ class LightMatchDock(QtWidgets.QWidget):
         if not IN_MAX:
             return live, renderer, census_text, warnings
         try:
-            pulled = maxscene.pull_settings()
+            # cam.* from the picked camera → Analyze's `from` exposure matches the camera
+            # whose recipe we apply (stamp_camera_node targets the same node).
+            pulled = maxscene.pull_settings(self._active_camera())
             live, renderer = pulled["params"], pulled["renderer"]
         except Exception:
             pass
@@ -984,7 +995,9 @@ class LightMatchDock(QtWidgets.QWidget):
         # frame and make Apply look like it did nothing (found 2026-07-13).
         live, renderer = None, ""
         try:
-            pulled = maxscene.pull_settings()
+            # Same camera as the moves we stamp/apply below (_checked_values →
+            # stamp_camera_node(self._active_camera())) so the refine `from` is honest.
+            pulled = maxscene.pull_settings(self._active_camera())
             live, renderer = pulled["params"], pulled["renderer"]
         except Exception:
             pass
@@ -1039,7 +1052,9 @@ class LightMatchDock(QtWidgets.QWidget):
         def correct_cb(cap, n):
             live = None
             try:
-                live = self._run_on_main(lambda: maxscene.pull_settings()["params"])
+                # Pull the picked camera's exposure so it matches apply_cb, which stamps
+                # cam.* onto self._active_camera() — keeps pull and apply on one camera.
+                live = self._run_on_main(lambda: maxscene.pull_settings(self._active_camera())["params"])
             except Exception:
                 pass
             attempt_n = int(slot.get("attempt_count", 0)) + 1

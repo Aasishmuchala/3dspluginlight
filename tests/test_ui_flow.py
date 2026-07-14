@@ -124,7 +124,7 @@ def test_full_dock_flow(make_dock, tmp_path, monkeypatch):
     applied_log = {}
     monkeypatch.setattr(
         dockmod.maxscene, "pull_settings",
-        lambda: {"params": {"sun.turbidity": 3.0, "cam.iso": 320.0}, "renderer": "V_Ray_7", "missing": [], "counts": {}},
+        lambda *a, **k: {"params": {"sun.turbidity": 3.0, "cam.iso": 320.0}, "renderer": "V_Ray_7", "missing": [], "counts": {}},
     )
 
     def fake_apply(values):
@@ -176,7 +176,7 @@ def test_dock_diagnostics_runs_via_marshaller(make_dock, tmp_path, monkeypatch):
     monkeypatch.setattr(dockmod, "IN_MAX", True)
     monkeypatch.setattr(dockmod.maxscene, "renderer_name", lambda: "V_Ray_7")
     monkeypatch.setattr(dockmod.maxscene, "pull_settings",
-                        lambda: {"params": {"sun.turbidity": 3.0}, "renderer": "V_Ray_7", "missing": []})
+                        lambda *a, **k: {"params": {"sun.turbidity": 3.0}, "renderer": "V_Ray_7", "missing": []})
     monkeypatch.setattr(dockmod.maxscene, "collect_census",
                         lambda: {"is_vray": True, "renderer": "V_Ray_7", "lights": [{"name": "L", "on": True}],
                                  "suns": [{"name": "S", "on": True}], "cameras": [{"name": "c", "class": "VRayPhysicalCamera", "exposure_on": True}],
@@ -270,7 +270,7 @@ def test_dock_autopilot_runs_and_reports(make_dock, tmp_path, monkeypatch):
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(dockmod, "IN_MAX", True)
     monkeypatch.setattr(dockmod.maxvfb, "render_view", lambda *a, **k: _pil())
-    monkeypatch.setattr(dockmod.maxscene, "pull_settings", lambda: {"params": {}, "renderer": "V"})
+    monkeypatch.setattr(dockmod.maxscene, "pull_settings", lambda *a, **k: {"params": {}, "renderer": "V"})
     monkeypatch.setattr(dockmod.maxscene, "apply_values",
                         lambda moves: {"applied": [m["param"] for m in moves], "failed": [], "verified": [m["param"] for m in moves], "unverified": [], "manual": []})
 
@@ -429,8 +429,13 @@ def test_lighting_snapshot_save_restore_and_auto_switch(make_dock, tmp_path, mon
     monkeypatch.setattr(dockmod, "IN_MAX", True)
 
     scene = {"params": {"sun.intensity_mult": 1.0, "cam.iso": 200}}  # the "live" scene lighting
-    monkeypatch.setattr(dockmod.maxscene, "pull_settings",
-                        lambda: {"params": dict(scene["params"]), "renderer": "V", "missing": [], "counts": {}})
+    pulled_for = []  # record which camera each pull was scoped to (dock threads _active_camera)
+
+    def fake_pull(camera_name=None):
+        pulled_for.append(camera_name)
+        return {"params": dict(scene["params"]), "renderer": "V", "missing": [], "counts": {}}
+
+    monkeypatch.setattr(dockmod.maxscene, "pull_settings", fake_pull)
     applied = []
     monkeypatch.setattr(dockmod.maxscene, "apply_values",
                         lambda rows: (applied.append(rows) or {"applied": [r["param"] for r in rows],
@@ -444,6 +449,7 @@ def test_lighting_snapshot_save_restore_and_auto_switch(make_dock, tmp_path, mon
     # SAVE look for CamA, then RESTORE it (cam.iso stamped to CamA)
     d._save_look()
     assert d._cam()["lighting_snapshot"] == {"sun.intensity_mult": 1.0, "cam.iso": 200}
+    assert pulled_for[-1] == "CamA"    # the snapshot pull was scoped to the picked camera
     assert d.restore_look_btn.isEnabled()                            # unlocks once a look is saved
     d._restore_look()
     assert applied and any(r["param"] == "cam.iso" and r.get("node") == "CamA" for r in applied[-1])
@@ -457,7 +463,10 @@ def test_lighting_snapshot_save_restore_and_auto_switch(make_dock, tmp_path, mon
     d.autolight_chk.setChecked(True)
     scene["params"] = {"sun.intensity_mult": 2.0, "cam.iso": 400}     # CamB's current lighting
     applied.clear()
+    pulled_for.clear()
     d.cam_box.setCurrentText("CamA")
+    # save-on-leave snapshots the OUTGOING camera (CamB) — its exposure, scoped to CamB
+    assert "CamB" in pulled_for
     assert d.session["cameras"]["CamB"]["lighting_snapshot"] == {"sun.intensity_mult": 2.0, "cam.iso": 400}
     assert applied and any(r["param"] == "cam.iso" for r in applied[-1])  # CamA's look restored on enter
     assert "Auto lighting" in d.status.text()                              # the switch is DISCLOSED
