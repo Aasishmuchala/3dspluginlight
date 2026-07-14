@@ -25,6 +25,12 @@ source** — nothing is hand-copied, so the two products can never drift.
 - **Per-fixture, per-area** — a move can name an exact light (`"node":
   "VRayLight_Kitchen_Fill"`), so on a big project you lock the globals (matched on a
   hero shot) and solve each room with its own camera + local fixtures.
+- **Camera-scoped, bring-your-own-render** — pick the camera you're solving from a live
+  list of the scene's cameras (passive — it just scopes which camera your exposure moves
+  target); `cam.iso/fnumber/shutter` are stamped with THAT camera's exact node, so they
+  land on it, never on the renderer's first-of-kind. And you don't have to auto-render:
+  **Base…** loads your own render file as the base (manual path — works even outside
+  Max), so the loop runs on the exact frame you rendered.
 - **Cinematic depth** — a Z-depth pass feeds measured depth structure: subject-vs-
   background separation in stops, aerial-perspective (lifted far blacks + compressed far
   contrast), per-band tonal profile — the model speaks DP, not histogram.
@@ -47,37 +53,56 @@ source** — nothing is hand-copied, so the two products can never drift.
 - V-Ray (CPU or GPU — renderer properties are discovered, never hard-coded)
 - An omega gateway key (`oc_…`) — pasted once in the dock, stored in
   `%LOCALAPPDATA%/LightMatchMax/config.json`
-- Python deps inside Max once: `"<max>/Python/python.exe" -m pip install numpy Pillow requests`
+- Python deps into Max's user-site once (Max's bundled Python has no pip, and V-Ray's
+  native module needs numpy 1.x — so pin `numpy<2`):
+  `python -m pip install --python-version 3.11 --only-binary=:all: --target "%APPDATA%\Python\Python311\site-packages" "numpy<2" Pillow requests`
 
 ## Install
 
-1. Clone this repo (say to `C:\Users\you\lightmatch-max`).
+1. Clone this repo anywhere on the machine that runs Max. Note its absolute path.
 2. Copy `startup/lightmatch_max_startup.py` into
-   `%LOCALAPPDATA%/Autodesk/3dsMax/<ver> - 64bit/ENU/scripts/startup/` and, if your
-   clone lives elsewhere, set the `LIGHTMATCH_MAX` env var to the repo path.
-3. Restart Max → Customize → Customize User Interface → category **LightMatch** →
+   `%LOCALAPPDATA%/Autodesk/3dsMax/<ver> - 64bit/ENU/scripts/startup/`.
+3. **Point the plugin at THIS clone.** The startup script reads the repo path from the
+   `LIGHTMATCH_MAX` env var — there is no default. Set it to the absolute path of the repo
+   you cloned in step 1 (or edit `LIGHTMATCH_MAX_REPO` at the top of the copied startup
+   script). If it's unset or wrong, the MAXScript listener prints a clear hint and the
+   dock simply won't register — never a silent failure.
+4. Restart Max → Customize → Customize User Interface → category **LightMatch** →
    drag the action onto a toolbar.
 
 ## The loop
 
 1. **Reference…** — pick the look you want.
-2. **Grab VFB** (or **Render view**) — your render, no export.
-3. Set scene / time-of-day / rig; tick **Lock scene globals** for per-area passes on
+2. **Camera** — pick the camera you're solving from the dock list. It's *passive*: it
+   scopes which camera your exposure moves target, and doesn't touch the viewport unless
+   you ask. Exposure moves (`cam.iso/fnumber/shutter`) are stamped with the picked
+   camera's exact node, so they land on THAT camera, not the renderer's first-of-kind.
+   Optional: **Render camera** points the viewport at the picked camera and renders IT.
+3. **Base…** or **Grab VFB** — provide your render. **Base…** loads your own render file
+   (manual path, no auto-render — works even outside Max); **Grab VFB** / **Render view**
+   / **Render camera** are optional auto-render conveniences that read the frame buffer
+   directly, no export.
+4. Set scene / time-of-day / rig; tick **Lock scene globals** for per-area passes on
    a big project (sun/sky/fog/color-mapping stay frozen; the recipe solves with
    camera + local lights only, and any global move the model tries is withheld and
    disclosed).
-4. **Analyze the match** — exact controls with `from → to` and why.
-5. Untick anything you don't want, **Apply** (one undo step), **Re-render & Check** —
+5. **Analyze the match** — exact controls with `from → to` and why.
+6. Untick anything you don't want, **Apply** (one undo step), **Re-render & Check** —
    a measured % match and a 3–5-move trim card each round, until **MATCHED**.
 
 ## Development
 
 ```
 python -m pip install -e .[dev,ui]
-pytest                                 # 85 core tests (TS↔numpy parity, engine, stress, census, autopilot)
-pytest -m ui                           # + 6 offscreen dock-flow tests (91 total; needs PySide6)
+pytest                                 # 94 core tests (TS↔numpy parity, engine, stress, census, autopilot, camera scope)
+pytest -m ui -k <one_test_name>        # offscreen dock-flow suite — run ONE test per process (see below)
 python scripts/smoke_headless.py       # SMOKE_OK — core, anywhere
 ```
+
+Every UI id passes; run the offscreen suite **one test per process** (`-k` a single
+name, or a wrapper that spawns each). Each test passes on its own — PySide6 6.11 only
+aborts the interpreter on *multi-test* Qt teardown in the pytest harness (the exit code,
+not the flake, is authoritative), so the suite is excluded from the default `pytest` run.
 
 In-Max validation (headless, real V-Ray scene):
 
@@ -100,7 +125,7 @@ Run once inside a real Max session with a live key:
 0. **Run diagnostics first** — the button self-tests the whole Max + gateway plumbing
    in ~10s (deps, renderer, pull, census + warnings, apply→read-back verify, the
    main-thread marshaller, and a gateway key ping). All ✓ means the real run will work.
-1. The dock opens and docks.
+1. The dock opens as a floating tool panel (parented above the Max main window).
 2. A real reference + VFB grab → Analyze returns a recipe (try **Consensus ×3** for a
    steadier first pass, at 3× cost).
 3. Checked Apply changes the scene and a **single Ctrl+Z** reverts the whole recipe;
@@ -125,6 +150,23 @@ Re-sync the brain after web-repo changes:
 ```
 cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-max/data
 ```
+
+## Status (v0.5)
+
+Camera-scoped Stage 1. A live **camera picker** (populated from the scene) scopes which
+camera your exposure moves target — *passive*, no viewport switch unless you ask — and a
+**node-stamp** guarantees `cam.iso/fnumber/shutter` land on the PICKED camera's exact
+node, never the renderer's first-of-kind. **Bring-your-own-render**: **Base…** loads your
+own render file as the base (manual path — works even outside Max), so the loop runs on
+the exact frame you rendered; `Render view` / `Render camera` stay optional auto-render
+conveniences. The new `maxio` camera calls (`list_cameras` / `set_active_camera` /
+`render_camera`) and `stamp_camera_node` are stress-hardened: the stamp is a total guard —
+it returns a fresh list, NEVER mutates the caller's rows and NEVER raises, even on hostile
+input (a non-str/unhashable `param`, an already-node-targeted row, or a non-dict just
+passes through untouched). Headless matrix green (94 core + the offscreen UI suite;
+`smoke_headless.py` SMOKE_OK), and the **in-Max gate now exercises the camera code** —
+`scripts/smoke_max.py` certifies `list_cameras` / `set_active_camera` / `render_camera`
+against real pymxs — **pending the user's live Max run** to sign it off.
 
 ## Status (v0.4)
 

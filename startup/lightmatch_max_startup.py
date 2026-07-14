@@ -7,14 +7,25 @@ toolbar button / hotkey via Customize → Customize User Interface."""
 import os
 import sys
 
-LIGHTMATCH_MAX_REPO = os.environ.get("LIGHTMATCH_MAX", r"C:\Users\aasis\lightmatch-max")
+# The repo path comes from the LIGHTMATCH_MAX env var. This file is COPIED out of the
+# repo into Max's startup dir, so __file__ can't locate the clone — the env var is the
+# only reliable source. Default to empty (NOT a hardcoded machine path): a stale default
+# would silently insert a non-existent path and make `import lightmatch_max` fail with no
+# visible reason (found in the launch-readiness audit).
+LIGHTMATCH_MAX_REPO = os.environ.get("LIGHTMATCH_MAX", "")
 
 
 def _prep_path():
     """Interactive 3ds Max's Python doesn't auto-initialize site.py, so the user-site
     directory (where bundled-pip fallback installs) is not on sys.path — add it now so
     the deps check inside bootstrap.launch() finds numpy/PIL/requests. Idempotent."""
-    if LIGHTMATCH_MAX_REPO not in sys.path:
+    if not LIGHTMATCH_MAX_REPO:
+        print("[lightmatch-max] Set the LIGHTMATCH_MAX env var to your clone path "
+              r"(e.g. C:\Users\you\3dspluginlight) and restart Max.")
+    elif not os.path.isdir(LIGHTMATCH_MAX_REPO):
+        print(f"[lightmatch-max] LIGHTMATCH_MAX points to a missing folder: {LIGHTMATCH_MAX_REPO!r} — "
+              r"set it to your clone (e.g. C:\Users\you\3dspluginlight) and restart Max.")
+    elif LIGHTMATCH_MAX_REPO not in sys.path:
         sys.path.insert(0, LIGHTMATCH_MAX_REPO)
     try:
         import site
@@ -50,4 +61,4 @@ def _register():
 try:
     _register()
 except Exception as e:  # never break Max startup
-    print(f"[lightmatch-max] startup registration failed: {e}")
+    print(f"[lightmatch-max] startup registration failed: {e} — is LIGHTMATCH_MAX set to your clone path?")
