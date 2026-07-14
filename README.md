@@ -31,6 +31,14 @@ source** — nothing is hand-copied, so the two products can never drift.
   land on it, never on the renderer's first-of-kind. And you don't have to auto-render:
   **Base…** loads your own render file as the base (manual path — works even outside
   Max), so the loop runs on the exact frame you rendered.
+- **Per-camera workflow** — a session carries many cameras, and each camera keeps its
+  OWN reference, your loaded render, recipe, refine history, and a saved LIGHTING look.
+  Pick a camera in the dock and its whole state RECALLS — a pure panel swap, no scene
+  change. **Save look** snapshots that camera's lighting (sun/lights/color-mapping/gamma/
+  exposure) and **Restore look** re-applies it in one undo step (read-back verified,
+  cam-exposure targeted at the picked camera). Opt-in **Auto lighting on switch** (OFF by
+  default) does save-on-leave / restore-on-enter as you switch — the one control that
+  mutates the scene on a switch, and every auto switch is disclosed in the status bar.
 - **Cinematic depth** — a Z-depth pass feeds measured depth structure: subject-vs-
   background separation in stops, aerial-perspective (lifted far blacks + compressed far
   contrast), per-band tonal profile — the model speaks DP, not histogram.
@@ -73,11 +81,13 @@ source** — nothing is hand-copied, so the two products can never drift.
 ## The loop
 
 1. **Reference…** — pick the look you want.
-2. **Camera** — pick the camera you're solving from the dock list. It's *passive*: it
-   scopes which camera your exposure moves target, and doesn't touch the viewport unless
-   you ask. Exposure moves (`cam.iso/fnumber/shutter`) are stamped with the picked
-   camera's exact node, so they land on THAT camera, not the renderer's first-of-kind.
-   Optional: **Render camera** points the viewport at the picked camera and renders IT.
+2. **Camera** — pick the camera you're solving from the dock list. Each camera is its own
+   mini-session: its reference, your render, recipe, and refine history RECALL when you
+   pick it (a pure panel swap, no scene change). It's *passive*: it scopes which camera
+   your exposure moves target, and doesn't touch the viewport unless you ask. Exposure
+   moves (`cam.iso/fnumber/shutter`) are stamped with the picked camera's exact node, so
+   they land on THAT camera, not the renderer's first-of-kind. Optional: **Render camera**
+   points the viewport at the picked camera and renders IT.
 3. **Base…** or **Grab VFB** — provide your render. **Base…** loads your own render file
    (manual path, no auto-render — works even outside Max); **Grab VFB** / **Render view**
    / **Render camera** are optional auto-render conveniences that read the frame buffer
@@ -89,13 +99,18 @@ source** — nothing is hand-copied, so the two products can never drift.
 5. **Analyze the match** — exact controls with `from → to` and why.
 6. Untick anything you don't want, **Apply** (one undo step), **Re-render & Check** —
    a measured % match and a 3–5-move trim card each round, until **MATCHED**.
+7. *(Optional)* **Save look** snapshots this camera's whole lighting (sun/lights/color-
+   mapping/gamma/exposure); **Restore look** re-applies it in one undo step. Tick **Auto
+   lighting on switch** (OFF by default) to save-on-leave / restore-on-enter automatically
+   — the only thing that changes your scene when you switch cameras, and each switch is
+   disclosed in the status bar.
 
 ## Development
 
 ```
 python -m pip install -e .[dev,ui]
-pytest                                 # 94 core tests (TS↔numpy parity, engine, stress, census, autopilot, camera scope)
-pytest -m ui -k <one_test_name>        # offscreen dock-flow suite — run ONE test per process (see below)
+pytest                                 # 98 core tests (TS↔numpy parity, engine, stress, census, autopilot, camera scope, per-camera session + looks)
+pytest -m ui -k <one_test_name>        # offscreen dock-flow suite — 11 ids, run ONE test per process (see below)
 python scripts/smoke_headless.py       # SMOKE_OK — core, anywhere
 ```
 
@@ -139,8 +154,10 @@ Run once inside a real Max session with a live key:
    alongside Analyze/Check and feed the model measured subject/background separation and
    aerial haze. OFF by default (one extra render); a Z pass that isn't clean is skipped
    automatically, so it never feeds guessed numbers.
-7. **Sessions:** **Sessions ▾** reopens any past session (its reference + last recipe) or
-   starts a new one — pick up an area you were matching yesterday without re-importing.
+7. **Sessions:** **Sessions ▾** reopens any past session or starts a new one — and a
+   session now carries MANY cameras, each with its own reference, render, recipe, and
+   saved lighting look. The menu shows a 📷 count; picking a camera recalls that camera's
+   state. Pick up an area you were matching yesterday without re-importing.
 
 Everything up to the live model round — including the main-thread marshalling and
 autopilot — is machine-proven headlessly.
@@ -150,6 +167,23 @@ Re-sync the brain after web-repo changes:
 ```
 cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-max/data
 ```
+
+## Status (v0.6)
+
+Camera arc complete (Stages 2–3 on top of Stage 1). **Stage 2 — per-camera session
+model:** a session now holds many cameras (`cameras{name→slot}`), and each camera keeps
+its OWN reference, base render, recipe, and refine history; picking a camera in the dock
+RECALLS that camera's state as a pure panel swap — no scene change — and your loaded
+render persists per camera. Legacy single-slot sessions MIGRATE on load, and the session
+menu shows a 📷 camera count. **Stage 3 — per-camera lighting snapshots:** **Save look**
+snapshots the scene's lighting (sun/lights/color-mapping/gamma/exposure) as a camera's
+look and **Restore look** re-applies it in one undo step (read-back verified, cam-exposure
+targeted at the picked camera); an opt-in **Auto lighting on switch** (OFF by default) does
+save-on-leave / restore-on-enter as you switch cameras — the ONLY control that mutates the
+scene on a switch, honoring "not automatic," and every auto switch is disclosed in the
+status bar. Headless matrix green (**98 core** + tests/test_stress.py + the 11-id offscreen
+UI suite; `smoke_headless.py` SMOKE_OK), and the **in-Max gate now also exercises the
+Stage 3 save/restore round-trip** — **pending the user's live Max run** to sign it off.
 
 ## Status (v0.5)
 
@@ -163,7 +197,7 @@ conveniences. The new `maxio` camera calls (`list_cameras` / `set_active_camera`
 `render_camera`) and `stamp_camera_node` are stress-hardened: the stamp is a total guard —
 it returns a fresh list, NEVER mutates the caller's rows and NEVER raises, even on hostile
 input (a non-str/unhashable `param`, an already-node-targeted row, or a non-dict just
-passes through untouched). Headless matrix green (94 core + the offscreen UI suite;
+passes through untouched). Headless matrix green (98 core + the offscreen UI suite;
 `smoke_headless.py` SMOKE_OK), and the **in-Max gate now exercises the camera code** —
 `scripts/smoke_max.py` certifies `list_cameras` / `set_active_camera` / `render_camera`
 against real pymxs — **pending the user's live Max run** to sign it off.

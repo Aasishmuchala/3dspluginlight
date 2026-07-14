@@ -1,7 +1,9 @@
 """In-Max smoke — validates the pymxs surface (renderer reachable, KNOWN_PROPS pull,
-apply inside an undo record, undo round-trip, and camera-scope Stage 1:
-list_cameras / set_active_camera / render_camera through a real camera). Run headlessly
-via the .ms wrapper:
+apply inside an undo record, undo round-trip, camera-scope Stage 1:
+list_cameras / set_active_camera / render_camera through a real camera, and Stage 3:
+a lighting-snapshot Save-look/Restore-look round-trip — pull_settings ->
+scope.snapshot_to_rows -> apply_values, asserting the restore re-applies the saved
+value at the picked camera). Run headlessly via the .ms wrapper:
 
     powershell -File scripts/run_max_smoke.ps1     (or: 3dsmaxbatch scripts/run_smoke.ms)
 
@@ -88,6 +90,51 @@ def run() -> str:
         lines.append(f"render_camera({cam_name!r}) -> PIL {img.width}x{img.height}")
     except Exception as e:
         lines.append(f"render_camera logged (non-fatal headless quirk): {type(e).__name__}: {e}")
+
+    # -- STAGE 3 — LIGHTING SNAPSHOT round-trip (Save look / Restore look) --------------
+    # Compose the SHIPPED "Save look" (scene.pull_settings) → snapshot_to_rows → "Restore
+    # look" (scene.apply_values) path against REAL pymxs. Unlike render_camera above, this
+    # is UNGUARDED: a genuine exception (or a failed assertion) propagates and FAILS the
+    # smoke. The ONLY tolerated skip is a scene with no scalar lighting param to nudge —
+    # then we log 'stage3 snapshot: no scalar param' and move on without failing.
+    from lightmatch_max.core import scope  # noqa: E402
+
+    snap = scene.pull_settings()["params"]  # the exact dict a camera's "Save look" stores
+    lines.append(f"stage3 snapshot: {len(snap)} params captured")
+
+    # Prefer the same scalar lighting params the dock's diagnostics use.
+    scalar_key = next(
+        (k for k in ("sun.turbidity", "cam.iso", "light.multiplier")
+         if isinstance(snap.get(k), (int, float)) and not isinstance(snap.get(k), bool)),
+        None,
+    )
+    if scalar_key is None:
+        lines.append("stage3 snapshot: no scalar param")
+    else:
+        orig = float(snap[scalar_key])
+        # Nudge the LIVE scene away from the snapshot by a delta well beyond the float
+        # verify tolerance (max(1e-4, |v|*1e-4)); stay in-range (e.g. V-Ray turbidity 2..20).
+        nudged = orig + 1.0 if abs(orig) < 5.0 else orig - 1.0
+        nud_res = scene.apply_values([{"param": scalar_key, "set": nudged}])
+        after_nudge = scene.pull_settings()["params"].get(scalar_key)
+        lines.append(
+            f"stage3 nudge: {scalar_key} {orig} -> set {nudged}; scene now={after_nudge} ({nud_res})"
+        )
+
+        # "Restore look" — re-apply the WHOLE saved snapshot, exposure stamped at the
+        # picked camera (cam_name from the Stage 1 section) so cam.* lands on that node.
+        rows = scope.snapshot_to_rows(snap, cam_name)
+        res = scene.apply_values(rows)
+        restored = scene.pull_settings()["params"].get(scalar_key)
+        tol = max(1e-4, abs(orig) * 1e-4)
+        assert restored is not None and abs(restored - orig) <= tol, \
+            f"restore did not re-apply {scalar_key}: snapshot={orig}, after-restore={restored}"
+        assert scalar_key in res["verified"] or scalar_key in res["applied"], \
+            f"{scalar_key} not verified/applied by restore: {res}"
+        lines.append(
+            f"stage3 restore: {scalar_key} back to {restored} (snapshot {orig}); "
+            f"verified={scalar_key in res['verified']}, {len(rows)} rows applied via snapshot_to_rows({cam_name!r})"
+        )
 
     lines.append("MAX_SMOKE_OK")
     return "\n".join(lines)

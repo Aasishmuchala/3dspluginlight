@@ -1,6 +1,6 @@
 [project]
 name = "lightmatch-max"
-version = "0.5.0"
+version = "0.6.0"
 description = "LightMatch inside 3ds Max — match your render's lighting to any reference, natively: grab the VFB, get an exact V-Ray recipe, apply it undoably, re-render, converge."
 requires-python = ">=3.11"
 license = { text = "MIT" }
