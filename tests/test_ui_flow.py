@@ -460,3 +460,10 @@ def test_lighting_snapshot_save_restore_and_auto_switch(make_dock, tmp_path, mon
     d.cam_box.setCurrentText("CamA")
     assert d.session["cameras"]["CamB"]["lighting_snapshot"] == {"sun.intensity_mult": 2.0, "cam.iso": 400}
     assert applied and any(r["param"] == "cam.iso" for r in applied[-1])  # CamA's look restored on enter
+    assert "Auto lighting" in d.status.text()                              # the switch is DISCLOSED
+
+    # empty pull -> Save look reports nothing-to-save and leaves Restore logic consistent
+    scene["params"] = {}
+    d.autolight_chk.setChecked(False)
+    d._save_look()
+    assert "No lighting values found" in d.status.text()

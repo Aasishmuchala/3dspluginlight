@@ -157,8 +157,10 @@ def test_migrate_drops_stale_toplevel_and_heals_corrupt_slots():
     # A session with cameras AND leftover legacy top-level keys: the stale keys are dropped
     # so they can't diverge from / outlive the slots (Stage 2 review finding).
     m = sess.migrate_session({"id": "z", "cameras": {"": {"ref": {"keep": 1}}}, "ref": {"stale": 9},
-                              "recipe": {"stale": 1}, "attempts": [{"score": 1}]})
+                              "recipe": {"stale": 1}, "attempts": [{"score": 1}],
+                              "lighting_snapshot": {"cam.iso": 1}})
     assert "ref" not in m and "recipe" not in m and "attempts" not in m
+    assert "lighting_snapshot" not in m       # Stage 3 legacy key dropped too
     assert m["cameras"][""]["ref"] == {"keep": 1}
     # A non-dict slot at any key (hand-corrupted) is healed into a fresh slot, not left to
     # crash a reader.

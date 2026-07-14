@@ -90,7 +90,7 @@ def migrate_session(session: dict) -> dict:
         }}
     # Drop legacy top-level state unconditionally so it can never diverge from — or outlive —
     # the per-camera slots (a session already on the new model just has nothing to drop).
-    for _k in ("ref", "base", "recipe", "attempts", "attempt_count"):
+    for _k in ("ref", "base", "recipe", "attempts", "attempt_count", "lighting_snapshot"):
         session.pop(_k, None)
     # Heal ANY corrupted (non-dict) slot, not just the active one, so a hand-edited file
     # can't crash a downstream reader (e.g. list_sessions aggregating over all slots).

@@ -571,12 +571,25 @@ class LightMatchDock(QtWidgets.QWidget):
         new = (name or "").strip()
         prev = self.session.get("active_camera", "")
         auto = IN_MAX and self.autolight_chk.isChecked() and prev != new
-        if auto:
-            self._auto_save_look(prev)      # snapshot the camera you're leaving (no scene write)
+        saved = self._auto_save_look(prev) if auto else False   # snapshot the camera you leave (a read)
         self.session["active_camera"] = new
         self._recall_camera()
+        restored = self._auto_restore_look(new) if auto else None  # apply the one you enter (undoable)
         if auto:
-            self._auto_restore_look(new)     # apply the camera you're entering (one undo step)
+            self._note_auto_lighting(prev, new, saved, restored)
+
+    def _note_auto_lighting(self, prev, new, saved, restored):
+        """Disclose what auto lighting did on this switch — the save-on-leave overwrites the
+        outgoing camera's saved look, and a restore mutates the scene, so neither is silent."""
+        bits = []
+        if saved:
+            bits.append(f"saved {prev or 'default'}'s look")
+        if restored == "ok":
+            bits.append(f"restored {new or 'default'}'s look (Ctrl+Z reverts)")
+        elif restored == "fail":
+            bits.append(f"⚠ restore of {new or 'default'} failed — Ctrl+Z to revert any partial change")
+        if bits:
+            self.status.setText("Auto lighting: " + " · ".join(bits) + ".")
 
     # -- Stage 3: per-camera lighting snapshots (save-on-leave / restore-on-enter) --------
     def _snapshot_params(self):
@@ -594,6 +607,9 @@ class LightMatchDock(QtWidgets.QWidget):
         params = self._snapshot_params()
         if params is None:
             self.status.setText("Saving a look needs 3ds Max + V-Ray.")
+            return
+        if not params:  # Max reachable but nothing to snapshot — match the auto path, keep
+            self.status.setText("No lighting values found to save.")  # status ↔ enablement consistent
             return
         cam = self._active_camera()
         self._cam()["lighting_snapshot"] = params
@@ -616,20 +632,26 @@ class LightMatchDock(QtWidgets.QWidget):
             return
         self.status.setText("Restored look — " + self._format_apply(res))
 
-    def _auto_save_look(self, cam_name: str):
-        """save-on-leave: snapshot the OUTGOING camera's lighting into its slot, silently."""
+    def _auto_save_look(self, cam_name: str) -> bool:
+        """save-on-leave: snapshot the OUTGOING camera's lighting into its slot. Returns
+        True if a look was captured (so the switch can disclose the overwrite)."""
         params = self._snapshot_params()
         if params:
             sess.camera_slot(self.session, cam_name or "")["lighting_snapshot"] = params
+            return True
+        return False
 
     def _auto_restore_look(self, cam_name: str):
-        """restore-on-enter: apply the INCOMING camera's saved look if it has one, silently."""
+        """restore-on-enter: apply the INCOMING camera's saved look if it has one. Returns
+        "ok"/"fail"/None so the switch can disclose a scene write (and a silent partial fail)."""
         params = sess.camera_slot(self.session, cam_name or "").get("lighting_snapshot")
-        if isinstance(params, dict) and params:
-            try:
-                maxscene.apply_values(scope.snapshot_to_rows(params, cam_name or None))
-            except Exception:
-                pass
+        if not (isinstance(params, dict) and params):
+            return None
+        try:
+            maxscene.apply_values(scope.snapshot_to_rows(params, cam_name or None))
+            return "ok"
+        except Exception:
+            return "fail"
 
     def _recall_camera(self):
         """Load the active camera slot's recipe + score + I/O state into the dock — the
