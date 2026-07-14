@@ -137,8 +137,9 @@ def test_full_dock_flow(make_dock, tmp_path, monkeypatch):
     d.key_edit.setText("oc_stub")
     d.lock_chk.setChecked(True)
 
-    # 1) reference via the capture path (bypass the file dialog)
-    d.session["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    # 1) reference via the capture path (bypass the file dialog) — Stage 2: into the
+    #    active camera's slot (no camera picked here, so the "" default slot)
+    d._cam()["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
     # 2) grab a base render
     d._grab(base=True)
     assert d.base_capture is not None
@@ -229,34 +230,35 @@ def test_run_on_main_marshals_pymxs_to_the_gui_thread(make_dock, tmp_path, monke
 
 
 def test_session_picker_reloads_reference_and_recipe(make_dock, tmp_path, monkeypatch):
-    """Reopening a saved session restores its reference, context, lock, and last move
-    card onto a fresh dock — and clears base_capture so the artist must re-grab (the live
-    scene may have moved on). The MAJOR usability gap: sessions were write-only before."""
+    """Reopening a saved session restores context/lock and RECALLS the active camera's
+    slot — reference, the last move card, and (Stage 2) the persisted base render. Behavior
+    change: your provided render now persists per camera instead of being cleared on load."""
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
 
     s = sess.new_session("vray7max")
-    s["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
-    s["recipe"] = {"values": [{"param": "cam.iso", "set": 260, "from": 320, "why": "x"}]}
     s["context"] = {"scene": "interior", "time": "dusk", "rig": "both"}
     s["lock_globals"] = True
-    sess.push_attempt(s, 8.0, {"moves": [{"param": "cam.iso", "to": 240, "from": 260, "why": "trim"}],
-                               "status": "continue"})
+    slot = sess.camera_slot(s, "")  # per-camera state lives on the slot now
+    slot["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    slot["base"] = sess.capture(_pil(fill=(120, 110, 90)))  # your render — persists
+    slot["recipe"] = {"values": [{"param": "cam.iso", "set": 260, "from": 320, "why": "x"}]}
+    sess.push_attempt(slot, 8.0, {"moves": [{"param": "cam.iso", "to": 240, "from": 260, "why": "trim"}],
+                                  "status": "continue"})
     sess.save(s)
 
     d = make_dock()
-    d.base_capture = _pil()  # pretend a stale render is loaded
     assert d.session["id"] != s["id"]
 
     d._load_session(s["id"])
 
     assert d.session["id"] == s["id"]
-    assert d.session.get("ref") is not None          # reference restored
-    assert d.lock_chk.isChecked() is True            # lock restored
-    assert d.scene_box.currentText() == "interior"   # context restored
+    assert d._cam().get("ref") is not None            # reference recalled from the slot
+    assert d.base_capture is not None                 # Stage 2: the saved render PERSISTS
+    assert d.lock_chk.isChecked() is True             # lock restored
+    assert d.scene_box.currentText() == "interior"    # context restored
     assert d.time_box.currentText() == "dusk"
     assert d._has_recipe is True
-    assert d.base_capture is None                     # stale render cleared → must re-grab
     # the table shows the LATEST correction move, not the original recipe
     params = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]
     assert params == ["cam.iso"]
@@ -281,8 +283,8 @@ def test_dock_autopilot_runs_and_reports(make_dock, tmp_path, monkeypatch):
 
     d = make_dock()
     d.key_edit.setText("oc_stub")
-    d.session["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
-    d.session["recipe"] = {"values": [{"param": "cam.iso", "set": 300, "from": 320}]}
+    d._cam()["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    d._cam()["recipe"] = {"values": [{"param": "cam.iso", "set": 300, "from": 320}]}
     d._has_recipe = True  # precondition a real Analyze establishes
     d.rounds_spin.setValue(6)
     d._autopilot()
@@ -356,3 +358,41 @@ def test_pick_base_loads_your_own_render_without_max(make_dock, tmp_path, monkey
     assert d.base_capture is not None                 # your own render is now the base
     assert d.session["active_camera"] == "Cam_Living"  # tagged to the picked camera
     assert d.base_btn.isEnabled()                      # usable even with no Max
+
+
+def test_per_camera_state_is_isolated_and_recalled(make_dock, tmp_path, monkeypatch):
+    """Stage 2 core: each camera keeps its OWN reference / base / recipe, and switching the
+    picker recalls that camera's state — nothing bleeds between cameras."""
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+
+    d = make_dock()
+    d.cam_box.addItems(["Cam_A", "Cam_B"])
+
+    # --- set up Cam_A: its own reference + render + recipe on the table ---
+    d.cam_box.setCurrentText("Cam_A")
+    d._cam()["ref"] = sess.capture(_pil(fill=(200, 130, 70)))
+    d.base_capture = sess.capture(_pil(fill=(10, 20, 30)))          # -> Cam_A's slot
+    d._fill_table([{"param": "cam.iso", "set": 250, "from": 320}], "set")
+    d._cam()["recipe"] = {"values": [{"param": "cam.iso", "set": 250, "from": 320}]}
+    a_base_b64 = d.base_capture["b64"]
+
+    # --- switch to Cam_B: a clean slate, and the recall clears the table ---
+    d.cam_box.setCurrentText("Cam_B")
+    assert d._active_camera() == "Cam_B"
+    assert d._cam().get("ref") is None                              # Cam_A's ref did NOT leak
+    assert d.base_capture is None                                   # Cam_A's render did NOT leak
+    assert d.table.rowCount() == 0                                  # recall cleared the card
+    assert d._has_recipe is False
+    d.base_capture = sess.capture(_pil(fill=(90, 90, 90)))          # Cam_B gets its own render
+
+    # --- back to Cam_A: its reference, render, and recipe come BACK ---
+    d.cam_box.setCurrentText("Cam_A")
+    assert d._cam().get("ref") is not None
+    assert d.base_capture["b64"] == a_base_b64                      # exactly Cam_A's render
+    assert d._has_recipe is True
+    params = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]
+    assert params == ["cam.iso"]                                    # Cam_A's recipe recalled
+
+    # the two cameras are distinct slots under the one session
+    assert set(k for k in d.session["cameras"] if k) == {"Cam_A", "Cam_B"}

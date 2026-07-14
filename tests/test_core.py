@@ -108,20 +108,49 @@ def test_parse_json_from_text_robustness():
 
 
 def test_session_history_and_cap(tmp_path, monkeypatch):
+    # Stage 2: attempts/recipe/history live on a per-camera SLOT, not the session top level.
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
     s = sess.new_session()
-    s["recipe"] = {"values": [{"param": "cam.iso", "from": 100, "set": 200, "why": "w"}]}
+    slot = sess.camera_slot(s, "Cam_Kitchen")
+    slot["recipe"] = {"values": [{"param": "cam.iso", "from": 100, "set": 200, "why": "w"}]}
     for i in range(10):
-        sess.push_attempt(s, 20 - i, {"moves": [{"param": "cam.iso", "from": 200, "to": 190 - i, "why": "trim"}]})
-    assert len(s["attempts"]) == engine.ATTEMPTS_CAP
-    assert s["attempt_count"] == 10
-    rounds = sess.history_rounds(s)
+        sess.push_attempt(slot, 20 - i, {"moves": [{"param": "cam.iso", "from": 200, "to": 190 - i, "why": "trim"}]})
+    assert len(slot["attempts"]) == engine.ATTEMPTS_CAP
+    assert slot["attempt_count"] == 10
+    rounds = sess.history_rounds(slot)
     assert rounds[0]["round"] == 0
     assert rounds[1]["round"] == 3  # oldest stored is attempt 3 (10 - 8 + 1)
     sess.save(s)
     listed = sess.list_sessions()
+    # list_sessions aggregates attempts + best score across ALL of a session's cameras
     assert listed and listed[0]["attempts"] == engine.ATTEMPTS_CAP
     assert listed[0]["best_score"] == 11
+    assert listed[0]["cameras"] == 1  # one named camera (the "" default slot doesn't count)
+
+
+def test_migrate_legacy_session_wraps_into_default_slot(tmp_path, monkeypatch):
+    # A pre-Stage-2 session (top-level ref/recipe/attempts) migrates into cameras[""].
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    legacy = {
+        "id": "lmx-legacy01", "created": "2026-07-13T00:00:00", "name": "", "target": "vray7max",
+        "context": {"scene": "interior", "time": "dusk", "rig": "both"}, "lock_globals": True,
+        "ref": {"metrics": {}, "b64": "QUJD", "media_type": "image/jpeg"},
+        "recipe": {"values": [{"param": "cam.iso", "from": 320, "set": 260, "why": "x"}]},
+        "attempts": [{"score": 8.0, "correction": {"moves": []}, "at": "t"}],
+        "attempt_count": 1,
+    }
+    import json
+    (tmp_path / "lmx-legacy01.json").write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = sess.load("lmx-legacy01")
+    assert "ref" not in loaded and "recipe" not in loaded      # hoisted off the top level
+    assert loaded["active_camera"] == ""
+    slot = loaded["cameras"][""]
+    assert slot["ref"]["b64"] == "QUJD"                         # reference preserved
+    assert slot["recipe"]["values"][0]["param"] == "cam.iso"    # recipe preserved
+    assert slot["attempt_count"] == 1 and len(slot["attempts"]) == 1
+    assert loaded["lock_globals"] is True                       # session-level fields kept
+    # idempotent: migrating an already-migrated session is a no-op
+    assert sess.migrate_session(loaded) is loaded and loaded["cameras"][""]["attempt_count"] == 1
 
 
 def test_dumps_r4_rounds_and_compacts():

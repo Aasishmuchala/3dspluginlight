@@ -61,7 +61,8 @@ class LightMatchDock(QtWidgets.QWidget):
         self.setWindowTitle("LightMatch")
         self.setMinimumWidth(380)
         self.session = sess.new_session(TARGET)
-        self.base_capture: Optional[dict] = None
+        # base_capture is a PROPERTY over the active camera's slot (Stage 2) — the render
+        # you provide is remembered per camera, not on the widget.
         self.cfg = sess.load_config()
         self._threads: list[QtCore.QThread] = []
         self._workers: list[QtCore.QObject] = []
@@ -166,7 +167,11 @@ class LightMatchDock(QtWidgets.QWidget):
         cam_row = QtWidgets.QHBoxLayout()
         self.cam_box = QtWidgets.QComboBox()
         self.cam_box.setToolTip("Scene camera your camera-exposure moves target. Picking is passive — "
-                                "you provide the render yourself (Base… / Grab VFB).")
+                                "you provide the render yourself (Base… / Grab VFB). Each camera keeps "
+                                "its own reference, render, and recipe.")
+        # Switching cameras recalls that camera's stored state (Stage 2). _refresh_cameras
+        # repopulates under blockSignals, so a rescan never fires a spurious recall.
+        self.cam_box.currentTextChanged.connect(self._on_camera_changed)
         self.cam_refresh_btn = QtWidgets.QPushButton("⟳")
         self.cam_refresh_btn.setToolTip("Rescan scene cameras")
         self.cam_refresh_btn.setFixedWidth(28)
@@ -318,6 +323,9 @@ class LightMatchDock(QtWidgets.QWidget):
         self.base_btn.setEnabled(not busy)  # file load — no Max needed, usable standalone
         self.analyze_btn.setEnabled(not busy)
         self.sessions_btn.setEnabled(not busy)
+        # Lock the camera picker while busy: switching cameras mid-run would recall a
+        # different slot out from under the worker (Stage 2).
+        self.cam_box.setEnabled(not busy)
         # Scene I/O + diagnostics + camera rescan need Max.
         for b in (self.grab_btn, self.render_btn, self.diag_btn, self.cam_refresh_btn):
             b.setEnabled(not busy and IN_MAX)
@@ -393,7 +401,7 @@ class LightMatchDock(QtWidgets.QWidget):
             return
         try:
             from PIL import Image
-            self.session["ref"] = sess.capture(Image.open(path))
+            self._cam()["ref"] = sess.capture(Image.open(path))  # per active camera
             sess.save(self.session)
         except Exception as e:
             self.status.setText(f"Couldn't read that image: {e}")
@@ -410,13 +418,11 @@ class LightMatchDock(QtWidgets.QWidget):
             return
         try:
             from PIL import Image
-            self.base_capture = sess.capture(Image.open(path))
+            self.base_capture = sess.capture(Image.open(path))  # -> active camera's slot
+            sess.save(self.session)  # your render persists with this camera
         except Exception as e:
             self.status.setText(f"Couldn't read that image: {e}")
             return
-        cam = self._active_camera()
-        if cam:
-            self.session["active_camera"] = cam
         self._io_note()
 
     # -- sessions: reopen past work (reference + last recipe) or start fresh -----------
@@ -430,6 +436,8 @@ class LightMatchDock(QtWidgets.QWidget):
             best = s.get("best_score")
             pct = f"{match_percent(best)}% best" if isinstance(best, (int, float)) else "no score yet"
             label = f"{s.get('created', '?')}   ·   {s.get('attempts', 0)} attempt(s)   ·   {pct}"
+            if s.get("cameras"):
+                label += f"   · 📷 {s['cameras']}"
             if s.get("lock_globals"):
                 label += "   · 🔒 area"
             sid = s.get("id", "")
@@ -441,7 +449,7 @@ class LightMatchDock(QtWidgets.QWidget):
 
     def _new_session(self):
         self.session = sess.new_session(TARGET)
-        self.base_capture = None
+        self.session["active_camera"] = self._active_camera() or ""  # keep the picked camera
         self._has_recipe = False
         self.table.setRowCount(0)
         self.score_label.setText("")
@@ -450,49 +458,37 @@ class LightMatchDock(QtWidgets.QWidget):
         self.census_label.setText("")
         self._io_note()
         self._update_buttons(busy=False)
-        self.status.setText("New session — load a reference and grab a render to begin.")
+        self.status.setText("New session — pick a camera, load a reference, provide your render to begin.")
 
     def _load_session(self, session_id: str):
-        s = sess.load(session_id)
+        s = sess.load(session_id)  # migrated to the per-camera model on load
         if not s:
             self.status.setText("Couldn't load that session — its file is missing.")
             return
         self.session = s
-        # The live scene may have moved on since this session was saved, so DON'T pretend
-        # we have a current render — force a fresh grab before Apply/Check can score.
-        self.base_capture = None
         ctx = s.get("context") or {}
         self.scene_box.setCurrentText(ctx.get("scene", ""))
         self.time_box.setCurrentText(ctx.get("time", ""))
         self.rig_box.setCurrentText(ctx.get("rig", ""))
         self.lock_chk.setChecked(bool(s.get("lock_globals")))
-        # Restore the most recent move card: the latest correction if there is one, else
-        # the original recipe — so the artist sees exactly where they left off.
-        atts = s.get("attempts") or []
-        last_moves = atts[-1].get("correction", {}).get("moves") if atts else None
-        recipe_vals = (s.get("recipe") or {}).get("values")
-        if isinstance(last_moves, list) and last_moves:
-            self._fill_table(last_moves, val_key="to")
-            self._has_recipe = True
-        elif isinstance(recipe_vals, list) and recipe_vals:
-            self._fill_table(recipe_vals, val_key="set")
-            self._has_recipe = True
-        else:
-            self.table.setRowCount(0)
-            self._has_recipe = False
-        best = min((a["score"] for a in atts if isinstance(a.get("score"), (int, float))), default=None)
-        if best is not None:
-            self.score_label.setText(f"{match_percent(best)}% best (loaded)")
-            self.score_label.setStyleSheet(f"color:{AMBER};")
-        else:
-            self.score_label.setText("")
-        self.withheld_label.setText("")
+        # Point the picker at the session's active camera WITHOUT firing a recall (we recall
+        # explicitly below). If that camera isn't in the current scene's list, show it anyway
+        # so the saved slot is reachable; "" selects nothing → the default slot.
+        want = s.get("active_camera") or ""
+        self.cam_box.blockSignals(True)
+        if want and self.cam_box.findText(want) < 0:
+            self.cam_box.addItem(want)
+        self.cam_box.setCurrentIndex(self.cam_box.findText(want))  # -1 for "" → empty → default slot
+        self.cam_box.blockSignals(False)
+        # Recall the active camera's stored reference/render/recipe/score (its base persists,
+        # so a saved BYO render comes back — this is the per-camera recall).
+        self._recall_camera()
         self.warn_label.setText("")
         self.census_label.setText("")
-        self._io_note()
-        self._update_buttons(busy=False)
-        n = s.get("attempt_count", 0)
-        self.status.setText(f"Loaded session ({n} attempt(s)) — grab a fresh render, then Check to continue.")
+        n = self._cam().get("attempt_count", 0)
+        ncams = len([k for k in s.get("cameras", {}) if k])
+        cam_note = f" · {ncams} camera(s)" if ncams else ""
+        self.status.setText(f"Loaded session ({n} attempt(s){cam_note}) — continue where you left off.")
 
     def _grab(self, base: bool):
         try:
@@ -519,7 +515,60 @@ class LightMatchDock(QtWidgets.QWidget):
 
     # -- camera scope: pick a scene camera, render ITS view, target its exposure ---------
     def _active_camera(self) -> Optional[str]:
-        return self.cam_box.currentText().strip() or None
+        # The picker is the source of truth for which camera is active; guard hasattr so a
+        # base_capture access during __init__ (before _build) can't crash.
+        box = getattr(self, "cam_box", None)
+        name = box.currentText().strip() if box is not None else ""
+        return name or None
+
+    def _cam(self) -> dict:
+        """The ACTIVE camera's session slot (Stage 2), created lazily. Everything the dock
+        reads/writes per camera — ref, base, recipe, attempts — lives here. "" = the
+        default slot when no camera is picked."""
+        return sess.camera_slot(self.session, self._active_camera() or "")
+
+    @property
+    def base_capture(self):
+        """The render you're matching, for the ACTIVE camera. Reads/writes the camera slot
+        so switching cameras recalls that camera's own render (and it persists on save)."""
+        return self._cam().get("base")
+
+    @base_capture.setter
+    def base_capture(self, value):
+        self._cam()["base"] = value
+
+    def _on_camera_changed(self, name: str):
+        """User picked a different camera: remember it and recall THAT camera's stored
+        reference/render/recipe/score into the dock. Purely a panel swap — nothing touches
+        the scene (that's the Stage 3 lighting-snapshot story)."""
+        self.session["active_camera"] = (name or "").strip()
+        self._recall_camera()
+
+    def _recall_camera(self):
+        """Load the active camera slot's recipe + score + I/O state into the dock — the
+        recall-on-switch. Shared by the picker and the session loader. Non-destructive."""
+        slot = self._cam()
+        atts = slot.get("attempts") or []
+        last_moves = atts[-1].get("correction", {}).get("moves") if atts else None
+        recipe_vals = (slot.get("recipe") or {}).get("values")
+        if isinstance(last_moves, list) and last_moves:
+            self._fill_table(last_moves, val_key="to")
+            self._has_recipe = True
+        elif isinstance(recipe_vals, list) and recipe_vals:
+            self._fill_table(recipe_vals, val_key="set")
+            self._has_recipe = True
+        else:
+            self.table.setRowCount(0)
+            self._has_recipe = False
+        best = min((a["score"] for a in atts if isinstance(a.get("score"), (int, float))), default=None)
+        if best is not None:
+            self.score_label.setText(f"{match_percent(best)}% best")
+            self.score_label.setStyleSheet(f"color:{AMBER};")
+        else:
+            self.score_label.setText("")
+        self.withheld_label.setText("")
+        self._io_note()
+        self._update_buttons(busy=False)
 
     def _refresh_cameras(self):
         """Rescan the scene's cameras into the picker (MAIN thread — this runs in a GUI
@@ -540,6 +589,9 @@ class LightMatchDock(QtWidgets.QWidget):
             if i >= 0:
                 self.cam_box.setCurrentIndex(i)
         self.cam_box.blockSignals(False)
+        # Signals were blocked through the repopulate (no spurious recall), so sync the
+        # session's active-camera key to whatever the widget settled on.
+        self.session["active_camera"] = self._active_camera() or ""
         self.render_cam_btn.setEnabled(self.cam_box.count() > 0)
 
     def _render_camera(self):
@@ -563,9 +615,12 @@ class LightMatchDock(QtWidgets.QWidget):
         self._io_note()
 
     def _io_note(self):
-        r = "✓ reference" if self.session.get("ref") else "reference missing"
-        b = "✓ render" if self.base_capture else "render missing"
-        self.io_label.setText(f"{r} · {b}")
+        slot = self._cam()
+        cam = self._active_camera()
+        r = "✓ reference" if slot.get("ref") else "reference missing"
+        b = "✓ render" if slot.get("base") else "render missing"
+        tag = f" · 📷 {cam}" if cam else ""
+        self.io_label.setText(f"{r} · {b}{tag}")
 
     def _collect_scene(self):
         """Pull live params + full census on the MAIN thread (scene access). Returns
@@ -618,8 +673,11 @@ class LightMatchDock(QtWidgets.QWidget):
         return any(w["severity"] == "block" for w in warnings)
 
     def _analyze(self):
-        if not self.session.get("ref") or not self.base_capture:
-            self.status.setText("Load a reference and grab a render first.")
+        slot = self._cam()
+        if not slot.get("ref") or not slot.get("base"):
+            cam = self._active_camera()
+            where = f" for camera {cam}" if cam else ""
+            self.status.setText(f"Load a reference and provide your render{where} first.")
             return
         if self._need_key():
             return
@@ -633,7 +691,7 @@ class LightMatchDock(QtWidgets.QWidget):
             return
         self.session["_census_text"] = census_text  # reused each Check/Autopilot round
         self.session["_renderer"] = renderer
-        ref, base, ctx = self.session["ref"], self.base_capture, self._context()
+        ref, base, ctx = slot.get("ref"), slot.get("base"), self._context()
         consensus = self.consensus_chk.isChecked()
         # Depth grab is a MAIN-THREAD render — do it here, before the worker spawns, and
         # pass the finished text in (like census_text). None when off / not usable.
@@ -720,7 +778,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.warn_label.setStyleSheet("color:#2e8f5b;" if diagnostics.all_passed(results) else "color:#c47a2a;")
 
     def _analyze_done(self, recipe: dict):
-        self.session["recipe"] = recipe
+        self._cam()["recipe"] = recipe  # recipe belongs to the active camera
         sess.save(self.session)
         values = recipe.get("values", [])
         withheld = recipe.get("withheld_globals") or []
@@ -791,7 +849,8 @@ class LightMatchDock(QtWidgets.QWidget):
         self.status.setText(self._format_apply(res))
 
     def _check(self):
-        if not self.session.get("ref"):
+        slot = self._cam()
+        if not slot.get("ref"):
             self.status.setText("Load a reference first.")
             return
         if self._need_key():
@@ -800,9 +859,9 @@ class LightMatchDock(QtWidgets.QWidget):
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
         ctx = self._context()
-        ref = self.session["ref"]
-        n = int(self.session.get("attempt_count", 0)) + 1
-        history = sess.history_rounds(self.session)
+        ref = slot.get("ref")
+        n = int(slot.get("attempt_count", 0)) + 1
+        history = sess.history_rounds(slot)
         # Pull + render on the MAIN thread (pymxs). Render FRESH — you just applied the
         # recipe, so the scene changed; grabbing the old VFB would score the pre-apply
         # frame and make Apply look like it did nothing (found 2026-07-13).
@@ -835,7 +894,10 @@ class LightMatchDock(QtWidgets.QWidget):
 
     # -- AUTOPILOT: run the whole refine loop unattended -----------------------------
     def _autopilot(self):
-        if not self.session.get("recipe") or not self._has_recipe:
+        # Bind the ACTIVE camera's slot for the whole run — autopilot refines ONE camera,
+        # even if the picker is changed mid-loop.
+        slot = self._cam()
+        if not slot.get("recipe") or not self._has_recipe:
             self.status.setText("Analyze first — Autopilot then refines the recipe for you.")
             return
         if self._need_key():
@@ -844,7 +906,7 @@ class LightMatchDock(QtWidgets.QWidget):
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
         ctx = self._context()
-        ref = self.session["ref"]
+        ref = slot.get("ref")
         census_text = self.session.get("_census_text")
         renderer = self.session.get("_renderer", "")
         rounds = int(self.rounds_spin.value())
@@ -863,12 +925,12 @@ class LightMatchDock(QtWidgets.QWidget):
                 live = self._run_on_main(lambda: maxscene.pull_settings()["params"])
             except Exception:
                 pass
-            attempt_n = int(self.session.get("attempt_count", 0)) + 1
+            attempt_n = int(slot.get("attempt_count", 0)) + 1
             score, corr = engine.add_attempt(  # network — stays on the worker
-                key, model, TARGET, ref, cap, attempt_n, sess.history_rounds(self.session),
+                key, model, TARGET, ref, cap, attempt_n, sess.history_rounds(slot),
                 ctx, lock, live, renderer, census_text=census_text,
             )
-            sess.push_attempt(self.session, score, corr)  # so history grows each round
+            sess.push_attempt(slot, score, corr)  # so this camera's history grows each round
             return score, corr
 
         def apply_cb(moves):
@@ -922,7 +984,7 @@ class LightMatchDock(QtWidgets.QWidget):
 
     def _check_done(self, result):
         score, correction = result
-        sess.push_attempt(self.session, score, correction)
+        sess.push_attempt(self._cam(), score, correction)  # attempt belongs to the active camera
         sess.save(self.session)
         pct = match_percent(score)
         moves = correction.get("moves", [])
