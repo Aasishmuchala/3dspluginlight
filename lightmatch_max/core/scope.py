@@ -17,13 +17,18 @@ def stamp_camera_node(values, camera_name):
     first-of-kind. Returns a NEW list; a camera-param row (known_props[param].node == "cam")
     with no explicit non-empty 'node' gets a shallow copy carrying node=camera_name. Every
     other row — non-camera params, rows already node-targeted, non-dicts — passes through
-    untouched. No-op when camera_name is falsy. NEVER mutates the input rows."""
-    if not camera_name:
+    untouched. No-op when camera_name is falsy or values isn't a list. NEVER mutates the
+    input rows and NEVER raises, even on hostile rows (a non-str/unhashable `param` just
+    passes through) — matching validate_items / withhold_globals, which guard the same way."""
+    if not camera_name or not isinstance(values, list):
         return values
     kp = knownprops()["known_props"]
     out = []
     for it in values:
-        if isinstance(it, dict) and kp.get(it.get("param"), {}).get("node") == "cam" and not it.get("node"):
+        # isinstance(param, str) BEFORE the dict lookup: a list/dict `param` is unhashable
+        # and would raise on kp.get(param) otherwise (found by the camera stress sweep).
+        param = it.get("param") if isinstance(it, dict) else None
+        if isinstance(param, str) and kp.get(param, {}).get("node") == "cam" and not it.get("node"):
             row = dict(it)  # shallow copy — leave the caller's row untouched
             row["node"] = camera_name
             out.append(row)

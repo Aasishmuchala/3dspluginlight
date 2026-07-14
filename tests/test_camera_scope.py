@@ -58,3 +58,27 @@ def test_non_dict_rows_pass_through():
     assert out[0]["node"] == "Cam_Kitchen"
     assert out[1] == "not-a-dict"
     assert out[2] is None
+
+
+def test_hostile_param_never_raises():
+    """The camera stress sweep's finding: a row whose 'param' is unhashable (list/dict)
+    must pass through untouched, not raise TypeError on the known_props lookup — matching
+    validate_items / withhold_globals, which guard isinstance(param, str)."""
+    rows = [
+        {"param": ["cam.iso"], "set": 100},   # unhashable list param
+        {"param": {"x": 1}, "set": 100},      # unhashable dict param
+        {"param": 123, "set": 100},           # non-str, hashable
+        {"param": None, "set": 100},
+        {"set": 100},                          # no param key at all
+        {"param": "cam.iso", "set": 100},     # the one real cam row still stamps
+    ]
+    out = stamp_camera_node(rows, "PhysCam01")
+    assert out[:5] == rows[:5]                 # every hostile row passed through untouched
+    assert out[5]["node"] == "PhysCam01"       # the genuine cam.iso row still got stamped
+
+
+def test_non_list_values_returned_unchanged():
+    """A non-list `values` (None / scalar / str) is returned as-is rather than iterated —
+    no raise, honoring the 'NEVER raises' contract even off the real call path."""
+    for bad in (None, 123, 3.14):
+        assert stamp_camera_node(bad, "Cam_Kitchen") is bad
