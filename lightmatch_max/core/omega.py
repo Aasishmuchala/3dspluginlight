@@ -59,7 +59,9 @@ def parse_json_from_text(text: str) -> Optional[dict]:
                         obj = json.loads(text[start : i + 1])
                         if isinstance(obj, dict):
                             return obj
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, RecursionError, ValueError):
+                        # untrusted model reply — deeply-nested JSON can raise RecursionError
+                        # from json.loads; degrade to None (no recipe), never crash analyze
                         break
                     break
         start = text.find("{", start + 1)

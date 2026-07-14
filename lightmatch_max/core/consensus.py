@@ -26,6 +26,18 @@ from statistics import median
 from typing import Any
 
 
+def _finite_number(v) -> bool:
+    """True only for a real, finite numeric `set`. math.isfinite() converts to float and
+    raises OverflowError on a huge int literal (10**400) from a hostile model reply — treat
+    that as non-numeric (falls to the majority-vote path) instead of crashing the merge."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except (OverflowError, ValueError):
+        return False
+
+
 def _nkey(item: dict) -> tuple:
     param = item.get("param")
     node = item.get("node") if isinstance(item.get("node"), str) and item.get("node") else None
@@ -62,7 +74,7 @@ def merge_consensus_recipes(runs: list[dict], max_items: int = 32) -> dict:
         out = dict(items[0])  # metadata from the first emitting run
         out["consensus_n"] = len(items)
         sets = [it.get("set") for it in items]
-        all_numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in sets)
+        all_numeric = all(_finite_number(v) for v in sets)
         if all_numeric:
             out["set"] = median(sets)
         else:

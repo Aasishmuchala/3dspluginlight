@@ -192,6 +192,61 @@ def test_numeric_string_set_cannot_reach_apply_as_nonfinite():
     assert len(out) == 1 and out[0].get("clamped") is True
 
 
+def test_apply_values_float_boundary_never_setattrs_nonfinite(monkeypatch):
+    # Defense-in-depth at the Max WRITE boundary. validate_items (above) closes the
+    # REACHABLE hole, but a direct apply_values call / the diagnostics re-apply path / a
+    # future feature could bypass it. float("inf")/float("nan")/float("1e999") all parse
+    # WITHOUT raising, so apply_values' float branch must gate on math.isfinite and report
+    # the param FAILED before it ever reaches setattr on a live V-Ray node. Proven by
+    # injecting a fake pymxs whose node records every write.
+    import contextlib
+    import sys
+    import types
+
+    from lightmatch_max.maxio import scene
+
+    class _RecordingNode:
+        def __init__(self):
+            object.__setattr__(self, "writes", {})
+
+        def __setattr__(self, name, value):
+            self.writes[name] = value
+            object.__setattr__(self, name, value)
+
+    class _FakeRT:
+        def __init__(self):
+            self.created: list[_RecordingNode] = []
+
+        def VRaySun(self):  # both the class arg (via getattr) and the constructor
+            n = _RecordingNode()
+            self.created.append(n)
+            return n
+
+        def getClassInstances(self, _cls):
+            return []  # none exist -> _node_for takes the create path
+
+    fake_rt = _FakeRT()
+    fake_pymxs = types.ModuleType("pymxs")
+    fake_pymxs.runtime = fake_rt
+    fake_pymxs.undo = lambda *a, **k: contextlib.nullcontext()
+    monkeypatch.setitem(sys.modules, "pymxs", fake_pymxs)
+
+    # control: a FINITE value MUST reach setattr — proves the fake harness exercises the
+    # write path, so a later "no write" assertion means the guard fired, not a dead mock.
+    ok = scene.apply_values([{"param": "sun.intensity_mult", "set": 2.5}])
+    assert "sun.intensity_mult" in ok["applied"]
+    assert len(fake_rt.created) == 1 and fake_rt.created[0].writes.get("intensity_multiplier") == 2.5
+
+    # each non-finite `set` (direct float or numeric string) -> failed, and NO node is even
+    # created, so setattr is never reached with a non-finite value.
+    for bad in (float("inf"), float("-inf"), float("nan"), "1e999", "nan"):
+        fake_rt.created.clear()
+        res = scene.apply_values([{"param": "sun.intensity_mult", "set": bad}])
+        assert "sun.intensity_mult" in res["failed"], f"{bad!r} not reported failed: {res}"
+        assert "sun.intensity_mult" not in res["applied"], f"{bad!r} reached apply: {res}"
+        assert fake_rt.created == [], f"{bad!r} resolved a node before the guard: setattr risk"
+
+
 def test_history_rounds_survives_a_corrupt_attempts_list():
     # A hand-edited / hand-portable session (the module docstring invites this) can carry a
     # non-dict attempt (or non-dict recipe); history_rounds is on the correction path and
@@ -204,3 +259,43 @@ def test_history_rounds_survives_a_corrupt_attempts_list():
     assert [r["round"] for r in rounds] == [0, 4]            # recipe + the one valid attempt
     # a non-dict recipe is also tolerated (no crash, just no round 0)
     assert sess.history_rounds({"recipe": "corrupt", "attempts": []}) == []
+
+
+def test_huge_int_and_snapshot_nonfinite_cannot_reach_apply():
+    # A JSON integer literal with >308 digits parses to a Python int; float(10**400) and
+    # math.isfinite(10**400) raise OverflowError (not inf). validate_items must DROP it, not
+    # crash, and never let it (or a non-finite snapshot value) reach the apply payload.
+    from lightmatch_max.core import scope, consensus
+    out = engine.validate_items("vray7max", {"values": [
+        {"param": "sun.intensity_mult", "set": 10 ** 400},          # huge int -> drop
+        {"param": "sun.intensity_mult", "set": "1e999", "node": "A"},  # -> inf -> drop
+        {"param": "sun.intensity_mult", "set": "5.0", "node": "B"},   # keep, clamped
+    ]}, "recipe")["values"]
+    assert all(isinstance(it["set"], (int, float)) and math.isfinite(float(it["set"])) for it in out)
+    # snapshot restore is the ONE apply path that skips validate_items — it must filter too
+    rows = scope.snapshot_to_rows({"sun.turbidity": float("inf"), "cam.iso": 200, "big": 10 ** 400}, "CamX")
+    assert [r["param"] for r in rows] == ["cam.iso"] and math.isfinite(rows[0]["set"])
+    # consensus merge must not OverflowError on a huge int (falls to majority vote)
+    m = consensus.merge_consensus_recipes([{"values": [{"param": "sun.turbidity", "set": 10 ** 400}]}] * 2)
+    assert len(m["values"]) == 1
+
+
+def test_history_rounds_and_push_attempt_survive_hostile_bookkeeping():
+    # Corrupt 'correction' (non-dict) and non-numeric 'attempt_count' must degrade, not throw.
+    assert sess.history_rounds({"attempts": [{"correction": "oops"},
+                                             {"correction": {"moves": [{"param": "cam.iso", "to": 1, "from": 2}]}}],
+                                "attempt_count": "bad"}) [-1]["moves"][0]["param"] == "cam.iso"
+    slot = {"attempt_count": "bad", "attempts": []}
+    sess.push_attempt(slot, 5.0, {"moves": []})
+    assert slot["attempt_count"] == 1  # recovered from the junk count
+
+
+def test_measure_and_parse_degrade_on_pathological_input():
+    # 0x0 image -> documented ValueError (not ZeroDivisionError); js_round(nan) -> nan (no
+    # ValueError from math.floor); deeply-nested JSON -> None or a value, never RecursionError.
+    from lightmatch_max.core.metrics import js_round, measure_from_pixels
+    from lightmatch_max.core.omega import parse_json_from_text
+    with pytest.raises(ValueError):
+        measure_from_pixels(np.zeros((0,), "uint8"), 0, 0)
+    assert math.isnan(js_round(float("nan")))
+    parse_json_from_text('{"v":' * 2000 + "1" + "}" * 2000)  # must not raise RecursionError

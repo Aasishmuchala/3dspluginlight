@@ -46,6 +46,9 @@ SCORE_WEIGHTS: dict[str, float] = {
 def js_round(v: float, digits: int = 0) -> float:
     """JS Math.round semantics (half toward +infinity), scaled — Python's round()
     is banker's rounding and would drift from the TS output on exact halves."""
+    if not math.isfinite(v):
+        return v  # math.floor(nan/inf) raises ValueError — a non-finite input can only
+                  # come from a corrupted metric vector; pass it through, don't explode
     f = 10.0 ** digits
     return math.floor(v * f + 0.5) / f
 
@@ -89,6 +92,8 @@ def percentiles_from_histogram(values: np.ndarray, ps: list[float], n_bins: int 
 def measure_from_pixels(data: np.ndarray, w: int, h: int) -> dict[str, Any]:
     """data: uint8 array, flat length w*h*4 or shape (h, w, 4), RGBA row-major.
     Returns the MetricVector dict (same shape/keys as the TS implementation)."""
+    if w <= 0 or h <= 0:
+        raise ValueError("empty image (w/h <= 0)")  # else stat_n=0 -> ZeroDivisionError
     px = np.asarray(data, dtype=np.uint8).reshape(h, w, 4)
     n = w * h
 

@@ -105,7 +105,11 @@ def migrate_session(session: dict) -> dict:
 
 def push_attempt(slot: dict, score: float, correction: dict) -> None:
     """Append a scored attempt to ONE camera slot (not the whole session)."""
-    slot["attempt_count"] = int(slot.get("attempt_count", 0)) + 1
+    try:
+        prev = int(slot.get("attempt_count", 0))  # a hand-edited count may be non-numeric
+    except (TypeError, ValueError):
+        prev = len(slot.get("attempts") or [])
+    slot["attempt_count"] = prev + 1
     slot.setdefault("attempts", []).append(
         {"score": score, "correction": correction, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
     )
@@ -133,11 +137,17 @@ def history_rounds(slot: dict) -> list[dict]:
             ],
         })
     stored = slot.get("attempts", []) if isinstance(slot.get("attempts"), list) else []
-    first_n = int(slot.get("attempt_count", len(stored))) - (len(stored) - 1) if stored else 1
+    try:
+        base_n = int(slot.get("attempt_count", len(stored)))  # hand-edited count may be junk
+    except (TypeError, ValueError):
+        base_n = len(stored)
+    first_n = base_n - (len(stored) - 1) if stored else 1
     for i, att in enumerate(stored):
         if not isinstance(att, dict):
             continue  # skip a non-dict attempt (position/round index stays aligned)
-        corr = att.get("correction") or {}
+        corr = att.get("correction")
+        if not isinstance(corr, dict):
+            continue  # a truthy non-dict 'correction' (e.g. a string) would explode on .get
         if isinstance(corr.get("moves"), list):
             rounds.append({
                 "round": first_n + i,

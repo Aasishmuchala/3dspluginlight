@@ -3,6 +3,8 @@ plugin's Area-mode behavior can never drift from the web app's (web src/lib/scop
 
 from __future__ import annotations
 
+import math
+
 from .data import knownprops
 
 
@@ -44,7 +46,21 @@ def snapshot_to_rows(params, camera_name=None):
     degrades to [] on a non-dict snapshot; NEVER raises. Pure (no pymxs) so it's unit-testable."""
     if not isinstance(params, dict):
         return []
-    rows = [{"param": k, "set": v} for k, v in params.items() if isinstance(k, str)]
+    rows = []
+    for k, v in params.items():
+        if not isinstance(k, str):
+            continue
+        # Drop a non-finite / overflowing numeric so a hand-edited (or older-format)
+        # lighting_snapshot can't write inf/nan onto a live node via apply_values — this is
+        # the ONE apply-reaching path that skips engine.validate_items (whole-plugin stress
+        # finding). Non-numeric values (enum option strings, bools) pass through.
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            try:
+                if not math.isfinite(v):
+                    continue
+            except (OverflowError, ValueError):
+                continue
+        rows.append({"param": k, "set": v})
     return stamp_camera_node(rows, camera_name)
 
 

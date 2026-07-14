@@ -155,25 +155,33 @@ def validate_items(target: str, cleaned: dict, mode: str) -> dict:
         if nkey in seen:
             continue
         seen.add(nkey)
+        # Finite/shape gate on the value. A numeric-looking STRING ("1e999", "nan") or a
+        # huge int literal (10**400) must NOT reach apply_values, whose float(raw) yields
+        # inf/nan WITHOUT raising (or itself OverflowErrors) and setattrs onto a live V-Ray
+        # node. Coerce every numeric-ish `set` to float; drop it if it isn't finite. A
+        # genuine non-numeric string (an enum option like "Reinhard") won't parse and passes
+        # through untouched (found by the whole-plugin stress sweep).
         v = it.get(val_key)
-        fv = None
+        fv, keep_as_is = None, False
         if isinstance(v, bool):
-            fv = None  # leave bools for the apply layer's bool path
+            keep_as_is = True  # bools have their own apply path
         elif isinstance(v, (int, float)):
-            fv = float(v)
-        elif isinstance(v, str):
-            # A numeric-looking STRING ("1e999", "nan", "999999") bypasses the numeric gate
-            # and reaches apply_values, whose float(raw) yields inf/nan WITHOUT raising and
-            # setattrs it onto a live V-Ray node. Coerce and validate it the same way; a
-            # genuine non-numeric string (an enum option like "Reinhard") won't parse and is
-            # left untouched (found by the whole-plugin stress sweep).
             try:
-                fv = float(v)
-            except (ValueError, TypeError):
+                fv = float(v)  # 10**400 -> OverflowError -> drop below
+            except (OverflowError, ValueError):
                 fv = None
-        if fv is not None:
-            if not math.isfinite(fv):
-                continue  # NaN/Inf move is meaningless — clamp can't fix it; drop the row
+        elif isinstance(v, str):
+            try:
+                fv = float(v)  # "1e999" -> inf (dropped by isfinite); "5.0" -> 5.0
+            except (ValueError, TypeError):
+                keep_as_is = True  # enum option, leave it
+            except OverflowError:
+                fv = None  # numeric but overflowing -> drop
+        else:
+            keep_as_is = True  # unknown type — the apply layer rejects it honestly
+        if not keep_as_is:
+            if fv is None or not math.isfinite(fv):
+                continue  # overflow / NaN / Inf — clamp can't fix it; drop the row
             clamped_v, flagged = data.clamp(target, param, fv)
             it = dict(it)
             it[val_key] = clamped_v
