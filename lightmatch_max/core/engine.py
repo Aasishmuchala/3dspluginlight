@@ -156,10 +156,25 @@ def validate_items(target: str, cleaned: dict, mode: str) -> dict:
             continue
         seen.add(nkey)
         v = it.get(val_key)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            if not math.isfinite(float(v)):
+        fv = None
+        if isinstance(v, bool):
+            fv = None  # leave bools for the apply layer's bool path
+        elif isinstance(v, (int, float)):
+            fv = float(v)
+        elif isinstance(v, str):
+            # A numeric-looking STRING ("1e999", "nan", "999999") bypasses the numeric gate
+            # and reaches apply_values, whose float(raw) yields inf/nan WITHOUT raising and
+            # setattrs it onto a live V-Ray node. Coerce and validate it the same way; a
+            # genuine non-numeric string (an enum option like "Reinhard") won't parse and is
+            # left untouched (found by the whole-plugin stress sweep).
+            try:
+                fv = float(v)
+            except (ValueError, TypeError):
+                fv = None
+        if fv is not None:
+            if not math.isfinite(fv):
                 continue  # NaN/Inf move is meaningless — clamp can't fix it; drop the row
-            clamped_v, flagged = data.clamp(target, param, float(v))
+            clamped_v, flagged = data.clamp(target, param, fv)
             it = dict(it)
             it[val_key] = clamped_v
             if flagged:

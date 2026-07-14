@@ -173,3 +173,34 @@ def test_live_params_are_capped_and_clipped():
     block = next(c["text"] for c in content if "CURRENT SCENE SETTINGS" in c.get("text", ""))
     assert block.count("\n  k") <= 64
     assert "v" * 121 not in block
+
+
+def test_numeric_string_set_cannot_reach_apply_as_nonfinite():
+    # A hostile model reply that emits `set` as a numeric STRING bypassed the numeric gate
+    # and reached apply_values, where float("1e999")/float("nan") make inf/nan WITHOUT
+    # raising and setattr'd a live V-Ray node. validate_items must coerce+validate strings.
+    out = engine.validate_items("vray7max", {"values": [
+        {"param": "sun.intensity_mult", "set": "1e999"},          # -> inf
+        {"param": "sun.intensity_mult", "set": "nan", "node": "A"},
+        {"param": "sun.intensity_mult", "set": "-inf", "node": "B"},
+        {"param": "sun.intensity_mult", "set": "999999", "node": "C"},  # finite but wild
+    ]}, "recipe")["values"]
+    for it in out:                                   # every survivor is a finite number now
+        assert isinstance(it["set"], (int, float)) and not isinstance(it["set"], bool)
+        assert math.isfinite(float(it["set"]))
+    # the three non-finite strings were dropped entirely; only the clamped 999999 survives
+    assert len(out) == 1 and out[0].get("clamped") is True
+
+
+def test_history_rounds_survives_a_corrupt_attempts_list():
+    # A hand-edited / hand-portable session (the module docstring invites this) can carry a
+    # non-dict attempt (or non-dict recipe); history_rounds is on the correction path and
+    # must degrade to fewer rounds, not throw AttributeError out of a guard-shaped function.
+    slot = {"recipe": {"values": [{"param": "cam.iso", "set": 200, "from": 320}]},
+            "attempts": ["GARBAGE", None, 42,
+                         {"correction": {"moves": [{"param": "cam.iso", "to": 190, "from": 200}]}}],
+            "attempt_count": 4}
+    rounds = sess.history_rounds(slot)                       # must not raise
+    assert [r["round"] for r in rounds] == [0, 4]            # recipe + the one valid attempt
+    # a non-dict recipe is also tolerated (no crash, just no round 0)
+    assert sess.history_rounds({"recipe": "corrupt", "attempts": []}) == []

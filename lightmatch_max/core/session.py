@@ -119,7 +119,11 @@ def history_rounds(slot: dict) -> list[dict]:
     marked)."""
     rounds: list[dict] = []
     recipe = slot.get("recipe")
-    if recipe and isinstance(recipe.get("values"), list):
+    # Guard recipe AND each attempt as dicts — a hand-edited / hand-portable session (the
+    # module docstring invites that) can carry a non-dict here, and this function is on the
+    # correction path; mirror the isinstance guards already used on values/moves below so a
+    # corrupt slot degrades to fewer rounds instead of crashing (camera stress sweep finding).
+    if isinstance(recipe, dict) and isinstance(recipe.get("values"), list):
         rounds.append({
             "round": 0,
             "moves": [
@@ -128,9 +132,11 @@ def history_rounds(slot: dict) -> list[dict]:
                 for v in recipe["values"] if isinstance(v, dict)
             ],
         })
-    stored = slot.get("attempts", [])
+    stored = slot.get("attempts", []) if isinstance(slot.get("attempts"), list) else []
     first_n = int(slot.get("attempt_count", len(stored))) - (len(stored) - 1) if stored else 1
     for i, att in enumerate(stored):
+        if not isinstance(att, dict):
+            continue  # skip a non-dict attempt (position/round index stays aligned)
         corr = att.get("correction") or {}
         if isinstance(corr.get("moves"), list):
             rounds.append({
