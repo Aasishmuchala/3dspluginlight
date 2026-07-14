@@ -396,3 +396,25 @@ def test_per_camera_state_is_isolated_and_recalled(make_dock, tmp_path, monkeypa
 
     # the two cameras are distinct slots under the one session
     assert set(k for k in d.session["cameras"] if k) == {"Cam_A", "Cam_B"}
+
+
+def test_analyze_recipe_lands_on_the_analyzed_camera(make_dock, tmp_path, monkeypatch):
+    """Stage 2 review fix: the recipe is stored on the camera that was ANALYZED (the bound
+    slot), even if the active camera changed after the worker spawned (e.g. a mid-analyze
+    camera rescan) — not on whoever happens to be active at callback time."""
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+
+    d = make_dock()
+    d.cam_box.addItems(["CamA", "CamB"])
+    d.cam_box.setCurrentText("CamA")
+    slot_a = d._cam()
+    # simulate the active camera moving to CamB while the analyze worker is in flight
+    d.cam_box.setCurrentText("CamB")
+    assert d._active_camera() == "CamB"
+
+    d._analyze_done({"values": [{"param": "cam.iso", "set": 250, "from": 320}]}, slot_a)
+
+    assert slot_a.get("recipe") is not None                          # the analyzed camera got it
+    assert d.session["cameras"]["CamA"]["recipe"] is not None
+    assert d.session["cameras"]["CamB"].get("recipe") is None        # NOT the now-active one

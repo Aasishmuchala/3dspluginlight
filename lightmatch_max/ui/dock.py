@@ -586,8 +586,13 @@ class LightMatchDock(QtWidgets.QWidget):
         self.cam_box.addItems([c.get("name", "") for c in cams if c.get("name")])
         if keep is not None:
             i = self.cam_box.findText(keep)
-            if i >= 0:
-                self.cam_box.setCurrentIndex(i)
+            if i < 0:
+                # The camera you're solving isn't in the rescanned scene (renamed / deleted /
+                # transient). Keep it selected rather than silently jumping to another camera
+                # (which would strand your per-camera work and mis-target the recipe).
+                self.cam_box.addItem(keep)
+                i = self.cam_box.findText(keep)
+            self.cam_box.setCurrentIndex(i)
         self.cam_box.blockSignals(False)
         # Signals were blocked through the repopulate (no spurious recall), so sync the
         # session's active-camera key to whatever the widget settled on.
@@ -702,10 +707,13 @@ class LightMatchDock(QtWidgets.QWidget):
         self.session["_depth_on"] = bool(depth_text)
         # engine.analyze does NO pymxs (evidence + gateway + validate) — safe on a worker.
         self._busy(True, "Reading the light" + (" (consensus ×3)…" if consensus else "…"))
+        # Bind THIS camera's slot into the completion handler — _collect_scene above can
+        # rescan cameras, so re-resolving _cam() in _analyze_done could store the recipe on
+        # a different camera than the one we analyzed (found in the Stage 2 review).
         self._spawn(
             lambda: engine.analyze(key, model, TARGET, ref, base, ctx, lock, live, renderer,
                                    census_text=census_text, consensus=consensus, depth_text=depth_text),
-            self._analyze_done,
+            lambda recipe: self._analyze_done(recipe, slot),
         )
 
     # -- DIAGNOSTICS: a fast self-test of the whole Max + gateway plumbing, run FIRST -
@@ -777,8 +785,8 @@ class LightMatchDock(QtWidgets.QWidget):
         self.warn_label.setText(report)
         self.warn_label.setStyleSheet("color:#2e8f5b;" if diagnostics.all_passed(results) else "color:#c47a2a;")
 
-    def _analyze_done(self, recipe: dict):
-        self._cam()["recipe"] = recipe  # recipe belongs to the active camera
+    def _analyze_done(self, recipe: dict, slot: Optional[dict] = None):
+        (slot if slot is not None else self._cam())["recipe"] = recipe  # the camera we analyzed
         sess.save(self.session)
         values = recipe.get("values", [])
         withheld = recipe.get("withheld_globals") or []

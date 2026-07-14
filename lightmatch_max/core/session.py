@@ -79,15 +79,24 @@ def migrate_session(session: dict) -> dict:
         return session
     if not isinstance(session.get("cameras"), dict) or not session.get("cameras"):
         session["cameras"] = {"": {
-            "ref": session.pop("ref", None),
-            "base": session.pop("base", None),
-            "recipe": session.pop("recipe", None),
-            "attempts": session.pop("attempts", None) or [],
-            "attempt_count": session.pop("attempt_count", None) or 0,
+            "ref": session.get("ref"),
+            "base": session.get("base"),
+            "recipe": session.get("recipe"),
+            "attempts": session.get("attempts") or [],
+            "attempt_count": session.get("attempt_count") or 0,
         }}
+    # Drop legacy top-level state unconditionally so it can never diverge from — or outlive —
+    # the per-camera slots (a session already on the new model just has nothing to drop).
+    for _k in ("ref", "base", "recipe", "attempts", "attempt_count"):
+        session.pop(_k, None)
+    # Heal ANY corrupted (non-dict) slot, not just the active one, so a hand-edited file
+    # can't crash a downstream reader (e.g. list_sessions aggregating over all slots).
+    cams = session["cameras"]
+    for _name in list(cams):
+        if not isinstance(cams.get(_name), dict):
+            cams[_name] = new_camera_slot()
     session.setdefault("active_camera", "")
-    # ensure the active slot exists (a hand-edited active_camera could point nowhere)
-    camera_slot(session, session.get("active_camera") or "")
+    camera_slot(session, session.get("active_camera") or "")  # ensure the active slot exists
     return session
 
 
@@ -157,7 +166,7 @@ def list_sessions() -> list[dict]:
         try:
             with open(p, "r", encoding="utf-8") as f:
                 s = migrate_session(json.load(f))
-            slots = list(s.get("cameras", {}).values())
+            slots = [v for v in s.get("cameras", {}).values() if isinstance(v, dict)]  # defensive
             scores = [a["score"] for slot in slots for a in (slot.get("attempts") or [])
                       if isinstance(a.get("score"), (int, float))]
             attempts = sum(len(slot.get("attempts") or []) for slot in slots)

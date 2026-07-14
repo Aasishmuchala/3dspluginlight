@@ -153,6 +153,32 @@ def test_migrate_legacy_session_wraps_into_default_slot(tmp_path, monkeypatch):
     assert sess.migrate_session(loaded) is loaded and loaded["cameras"][""]["attempt_count"] == 1
 
 
+def test_migrate_drops_stale_toplevel_and_heals_corrupt_slots():
+    # A session with cameras AND leftover legacy top-level keys: the stale keys are dropped
+    # so they can't diverge from / outlive the slots (Stage 2 review finding).
+    m = sess.migrate_session({"id": "z", "cameras": {"": {"ref": {"keep": 1}}}, "ref": {"stale": 9},
+                              "recipe": {"stale": 1}, "attempts": [{"score": 1}]})
+    assert "ref" not in m and "recipe" not in m and "attempts" not in m
+    assert m["cameras"][""]["ref"] == {"keep": 1}
+    # A non-dict slot at any key (hand-corrupted) is healed into a fresh slot, not left to
+    # crash a reader.
+    m2 = sess.migrate_session({"id": "z2", "cameras": {"": {"ref": None}, "front": "oops"}})
+    assert isinstance(m2["cameras"]["front"], dict) and m2["cameras"]["front"]["ref"] is None
+
+
+def test_list_sessions_survives_a_corrupt_slot(tmp_path, monkeypatch):
+    # A non-dict slot at a non-active key must NOT erase the whole session from the picker.
+    import json
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    good = sess.new_session()
+    sess.push_attempt(sess.camera_slot(good, "hero"), 7.0, {"moves": []})
+    good["cameras"]["ghost"] = "corrupt-not-a-dict"  # inject a bad slot
+    (tmp_path / f"{good['id']}.json").write_text(json.dumps(good), encoding="utf-8")
+    listed = sess.list_sessions()
+    assert listed and listed[0]["id"] == good["id"]     # still shown, not dropped
+    assert listed[0]["best_score"] == 7.0                # aggregation skipped the bad slot
+
+
 def test_dumps_r4_rounds_and_compacts():
     out = engine.dumps_r4({"a": 0.123456789, "b": [1.00004]})
     assert out == '{"a":0.1235,"b":[1.0]}'
