@@ -185,6 +185,27 @@ class LightMatchDock(QtWidgets.QWidget):
         cam_row.addWidget(self.render_cam_btn)
         lay.addLayout(cam_row)
 
+        # Stage 3 — per-camera LIGHTING SNAPSHOT. Save the scene's current lighting as this
+        # camera's look; Restore re-applies it (undoable). Auto lighting (OFF by default)
+        # does save-on-leave / restore-on-enter as you switch cameras — the only control
+        # here that mutates the scene, so it is strictly opt-in.
+        light_row = QtWidgets.QHBoxLayout()
+        self.save_look_btn = QtWidgets.QPushButton("Save look")
+        self.save_look_btn.setToolTip("Snapshot the scene's current lighting (sun, lights, color mapping, "
+                                      "exposure) as THIS camera's look.")
+        self.save_look_btn.clicked.connect(self._save_look)
+        self.restore_look_btn = QtWidgets.QPushButton("Restore look")
+        self.restore_look_btn.setToolTip("Re-apply this camera's saved lighting to the scene — one undo step.")
+        self.restore_look_btn.clicked.connect(self._restore_look)
+        self.autolight_chk = QtWidgets.QCheckBox("Auto lighting on switch")
+        self.autolight_chk.setToolTip("OFF by default. When ON, switching cameras SAVES the outgoing camera's "
+                                      "lighting and RESTORES the incoming camera's saved look (undoable). This "
+                                      "changes your scene on every switch — leave off if you don't want that.")
+        light_row.addWidget(self.save_look_btn)
+        light_row.addWidget(self.restore_look_btn)
+        light_row.addWidget(self.autolight_chk, 1)
+        lay.addLayout(light_row)
+
         self.io_label = QtWidgets.QLabel("Load a reference, pick a camera, then provide your render (Base… or Grab VFB).")
         self.io_label.setWordWrap(True)
         lay.addWidget(self.io_label)
@@ -291,6 +312,7 @@ class LightMatchDock(QtWidgets.QWidget):
 
         if not IN_MAX:
             for b in (self.grab_btn, self.render_btn, self.render_cam_btn, self.cam_refresh_btn,
+                      self.save_look_btn, self.restore_look_btn, self.autolight_chk,
                       self.apply_btn, self.check_btn, self.autopilot_btn):
                 b.setEnabled(False)
             self.status.setText("Standalone preview (no pymxs) — Max-only actions disabled.")
@@ -332,6 +354,10 @@ class LightMatchDock(QtWidgets.QWidget):
         # Render-camera additionally needs at least one camera in the picker, so the
         # button never reads as live when there's nothing to render (matches _refresh_cameras).
         self.render_cam_btn.setEnabled(not busy and IN_MAX and self.cam_box.count() > 0)
+        # Stage 3 lighting snapshots need Max; Restore additionally needs a saved look.
+        self.save_look_btn.setEnabled(not busy and IN_MAX)
+        self.autolight_chk.setEnabled(not busy and IN_MAX)
+        self.restore_look_btn.setEnabled(not busy and IN_MAX and bool(self._cam().get("lighting_snapshot")))
         # Apply / Check / Autopilot need Max AND a recipe on the table — disabled on
         # first open so the artist is guided to Analyze first, not into a dead-end.
         for b in (self.apply_btn, self.check_btn, self.autopilot_btn):
@@ -539,10 +565,71 @@ class LightMatchDock(QtWidgets.QWidget):
 
     def _on_camera_changed(self, name: str):
         """User picked a different camera: remember it and recall THAT camera's stored
-        reference/render/recipe/score into the dock. Purely a panel swap — nothing touches
-        the scene (that's the Stage 3 lighting-snapshot story)."""
-        self.session["active_camera"] = (name or "").strip()
+        reference/render/recipe/score into the dock. With Auto lighting OFF (default) this is
+        a pure panel swap — nothing touches the scene. With it ON (Stage 3, opt-in) it also
+        save-on-leaves the outgoing camera's lighting and restore-on-enters the new one."""
+        new = (name or "").strip()
+        prev = self.session.get("active_camera", "")
+        auto = IN_MAX and self.autolight_chk.isChecked() and prev != new
+        if auto:
+            self._auto_save_look(prev)      # snapshot the camera you're leaving (no scene write)
+        self.session["active_camera"] = new
         self._recall_camera()
+        if auto:
+            self._auto_restore_look(new)     # apply the camera you're entering (one undo step)
+
+    # -- Stage 3: per-camera lighting snapshots (save-on-leave / restore-on-enter) --------
+    def _snapshot_params(self):
+        """Pull the scene's current lighting into a {param: value} dict (the snapshot).
+        Main-thread pymxs. Returns None (never raises) outside Max or on failure."""
+        if not IN_MAX:
+            return None
+        try:
+            return maxscene.pull_settings().get("params") or {}
+        except Exception:
+            return None
+
+    def _save_look(self):
+        """Snapshot the scene's current lighting as the ACTIVE camera's look."""
+        params = self._snapshot_params()
+        if params is None:
+            self.status.setText("Saving a look needs 3ds Max + V-Ray.")
+            return
+        cam = self._active_camera()
+        self._cam()["lighting_snapshot"] = params
+        sess.save(self.session)
+        where = f"camera {cam}" if cam else "the default look"
+        self.status.setText(f"Saved {len(params)} lighting value(s) as {where}'s look.")
+        self._update_buttons(busy=False)  # Restore now unlocks for this camera
+
+    def _restore_look(self):
+        """Re-apply the active camera's saved lighting to the scene (one undo step)."""
+        params = self._cam().get("lighting_snapshot")
+        if not isinstance(params, dict) or not params:
+            self.status.setText("No saved look for this camera yet — Save look first.")
+            return
+        rows = scope.snapshot_to_rows(params, self._active_camera())
+        try:
+            res = maxscene.apply_values(rows)
+        except Exception as e:
+            self.status.setText(str(e))
+            return
+        self.status.setText("Restored look — " + self._format_apply(res))
+
+    def _auto_save_look(self, cam_name: str):
+        """save-on-leave: snapshot the OUTGOING camera's lighting into its slot, silently."""
+        params = self._snapshot_params()
+        if params:
+            sess.camera_slot(self.session, cam_name or "")["lighting_snapshot"] = params
+
+    def _auto_restore_look(self, cam_name: str):
+        """restore-on-enter: apply the INCOMING camera's saved look if it has one, silently."""
+        params = sess.camera_slot(self.session, cam_name or "").get("lighting_snapshot")
+        if isinstance(params, dict) and params:
+            try:
+                maxscene.apply_values(scope.snapshot_to_rows(params, cam_name or None))
+            except Exception:
+                pass
 
     def _recall_camera(self):
         """Load the active camera slot's recipe + score + I/O state into the dock — the

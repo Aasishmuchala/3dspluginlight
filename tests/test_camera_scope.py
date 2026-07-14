@@ -82,3 +82,17 @@ def test_non_list_values_returned_unchanged():
     no raise, honoring the 'NEVER raises' contract even off the real call path."""
     for bad in (None, 123, 3.14):
         assert stamp_camera_node(bad, "Cam_Kitchen") is bad
+
+
+def test_snapshot_to_rows_stamps_cam_and_guards():
+    """Stage 3: a lighting snapshot ({param: value}) becomes apply rows with cam params
+    stamped to the camera; non-dict / empty / non-str keys degrade safely."""
+    from lightmatch_max.core.scope import snapshot_to_rows
+    rows = snapshot_to_rows({"cam.iso": 200, "cam.fnumber": 8.0, "sun.intensity_mult": 1.5}, "CamX")
+    by = {r["param"]: r for r in rows}
+    assert by["cam.iso"]["node"] == "CamX" and by["cam.fnumber"]["node"] == "CamX"
+    assert "node" not in by["sun.intensity_mult"]                    # global stays first-of-kind
+    assert {r["param"]: r["set"] for r in rows} == {"cam.iso": 200, "cam.fnumber": 8.0, "sun.intensity_mult": 1.5}
+    assert snapshot_to_rows(None, "CamX") == [] and snapshot_to_rows({}, "CamX") == []
+    # non-str keys are skipped, never crash; no camera_name → no stamping
+    assert snapshot_to_rows({("a",): 1, "cam.iso": 5}, None) == [{"param": "cam.iso", "set": 5}]

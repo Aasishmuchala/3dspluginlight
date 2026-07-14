@@ -37,6 +37,17 @@ def stamp_camera_node(values, camera_name):
     return out
 
 
+def snapshot_to_rows(params, camera_name=None):
+    """Turn a lighting SNAPSHOT — a {param: value} dict as produced by scene.pull_settings —
+    into apply_values rows [{param, set, node?}], stamping physical-camera params with the
+    given camera's node so a restored exposure lands on THAT camera. Skips non-str keys and
+    degrades to [] on a non-dict snapshot; NEVER raises. Pure (no pymxs) so it's unit-testable."""
+    if not isinstance(params, dict):
+        return []
+    rows = [{"param": k, "set": v} for k, v in params.items() if isinstance(k, str)]
+    return stamp_camera_node(rows, camera_name)
+
+
 def withhold_globals(cleaned: dict, items_key: str) -> dict:
     """Area-mode enforcement belt (port of the engine's withholdGlobals): strip
     scene-global moves from recipe `values` / correction `moves`, parking them on

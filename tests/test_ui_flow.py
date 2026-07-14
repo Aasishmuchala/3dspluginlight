@@ -418,3 +418,45 @@ def test_analyze_recipe_lands_on_the_analyzed_camera(make_dock, tmp_path, monkey
     assert slot_a.get("recipe") is not None                          # the analyzed camera got it
     assert d.session["cameras"]["CamA"]["recipe"] is not None
     assert d.session["cameras"]["CamB"].get("recipe") is None        # NOT the now-active one
+
+
+def test_lighting_snapshot_save_restore_and_auto_switch(make_dock, tmp_path, monkeypatch):
+    """Stage 3: Save look snapshots the scene's lighting per camera; Restore re-applies it
+    (cam params stamped to the camera); Auto lighting (opt-in) save-on-leaves / restore-on-
+    enters as you switch cameras — and does NOTHING to the scene when it is off (default)."""
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(dockmod, "IN_MAX", True)
+
+    scene = {"params": {"sun.intensity_mult": 1.0, "cam.iso": 200}}  # the "live" scene lighting
+    monkeypatch.setattr(dockmod.maxscene, "pull_settings",
+                        lambda: {"params": dict(scene["params"]), "renderer": "V", "missing": [], "counts": {}})
+    applied = []
+    monkeypatch.setattr(dockmod.maxscene, "apply_values",
+                        lambda rows: (applied.append(rows) or {"applied": [r["param"] for r in rows],
+                                                                "failed": [], "verified": [], "unverified": [], "manual": []}))
+    monkeypatch.setattr(dockmod.maxscene, "list_cameras", lambda: [{"name": "CamA"}, {"name": "CamB"}])
+
+    d = make_dock()
+    d._refresh_cameras()
+    d.cam_box.setCurrentText("CamA")
+
+    # SAVE look for CamA, then RESTORE it (cam.iso stamped to CamA)
+    d._save_look()
+    assert d._cam()["lighting_snapshot"] == {"sun.intensity_mult": 1.0, "cam.iso": 200}
+    assert d.restore_look_btn.isEnabled()                            # unlocks once a look is saved
+    d._restore_look()
+    assert applied and any(r["param"] == "cam.iso" and r.get("node") == "CamA" for r in applied[-1])
+
+    # AUTO OFF (default): switching to CamB must NOT write to the scene
+    applied.clear()
+    d.cam_box.setCurrentText("CamB")
+    assert applied == []
+
+    # AUTO ON: switch back to CamA -> save-on-leave CamB's lighting, restore-on-enter CamA's
+    d.autolight_chk.setChecked(True)
+    scene["params"] = {"sun.intensity_mult": 2.0, "cam.iso": 400}     # CamB's current lighting
+    applied.clear()
+    d.cam_box.setCurrentText("CamA")
+    assert d.session["cameras"]["CamB"]["lighting_snapshot"] == {"sun.intensity_mult": 2.0, "cam.iso": 400}
+    assert applied and any(r["param"] == "cam.iso" for r in applied[-1])  # CamA's look restored on enter

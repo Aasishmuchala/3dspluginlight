@@ -43,9 +43,11 @@ def capture(img, media_type: str = "image/png", max_edge: int = 1568, quality: i
 # picking a camera in the dock recalls that camera's whole state. "" is the default slot
 # (no camera picked). context / lock_globals / renderer stay scene-wide on the session.
 def new_camera_slot() -> dict[str, Any]:
-    """One camera's state: reference + base + recipe + attempts. All JSON-serializable, so
-    a slot (including the user's loaded base render) persists with the session."""
-    return {"ref": None, "base": None, "recipe": None, "attempts": [], "attempt_count": 0}
+    """One camera's state: reference + base + recipe + attempts + a lighting snapshot
+    (Stage 3: a {param: value} dump of the scene's lighting for THIS camera's look). All
+    JSON-serializable, so a slot (including the user's loaded base render) persists."""
+    return {"ref": None, "base": None, "recipe": None, "attempts": [], "attempt_count": 0,
+            "lighting_snapshot": None}
 
 
 def new_session(target: str = "vray7max") -> dict[str, Any]:
@@ -84,6 +86,7 @@ def migrate_session(session: dict) -> dict:
             "recipe": session.get("recipe"),
             "attempts": session.get("attempts") or [],
             "attempt_count": session.get("attempt_count") or 0,
+            "lighting_snapshot": session.get("lighting_snapshot"),
         }}
     # Drop legacy top-level state unconditionally so it can never diverge from — or outlive —
     # the per-camera slots (a session already on the new model just has nothing to drop).
