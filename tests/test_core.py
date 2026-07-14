@@ -30,6 +30,19 @@ def test_lookup_and_clamp():
     assert not flagged
 
 
+def test_lookup_unhashable_param_returns_none():
+    # A hand-corrupted session JSON can carry a list/dict `param` (unhashable). It must
+    # miss gracefully (None), not raise TypeError on the internal dict .get() — the
+    # dock's _fill_table -> data.lookup path feeds rows straight from disk.
+    assert data.lookup("vray7max", ["sun", "intensity_mult"]) is None
+    assert data.lookup("vray7max", {"param": "sun.intensity_mult"}) is None
+    assert data.lookup("vray7max", 42) is None
+    assert data.lookup("vray7max", None) is None
+    # clamp() rides on lookup(), so it must stay silent on the same hostile input.
+    v, flagged = data.clamp("vray7max", ["sun", "intensity_mult"], 5.0)
+    assert (v, flagged) == (5.0, False)
+
+
 def test_system_prompt_variants():
     free = data.system_prompt("vray7max", "recipe", False)
     locked = data.system_prompt("vray7max", "recipe", True)

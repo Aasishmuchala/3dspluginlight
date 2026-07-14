@@ -50,6 +50,14 @@ def _entry_index(target: str) -> dict[str, dict]:
 
 
 def lookup(target: str, param_id: str) -> Optional[dict]:
+    # isinstance(param_id, str) BEFORE the dict lookup: a list/dict param_id (from a
+    # hand-corrupted session JSON loaded via the dock's _fill_table -> data.lookup path)
+    # is unhashable and would raise TypeError on .get() otherwise. A non-str param is an
+    # unknown control, so return None just like a genuine miss — matching how
+    # scope.stamp_camera_node / withhold_globals / engine.validate_items guard the same
+    # way (found by the camera Stage 1 stress sweep). clamp() rides on this via lookup().
+    if not isinstance(param_id, str):
+        return None
     return _entry_index(target).get(param_id)
 
 
