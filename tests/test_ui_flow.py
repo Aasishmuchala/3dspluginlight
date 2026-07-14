@@ -329,3 +329,30 @@ def test_camera_picker_render_and_stamp(make_dock, tmp_path, monkeypatch):
     sun_row = next(r for r in checked if r["param"] == "sun.intensity_mult")
     assert cam_row.get("node") == "Cam_Kitchen"   # stamp reached the apply path
     assert "node" not in sun_row                  # global untouched
+
+
+def test_pick_base_loads_your_own_render_without_max(make_dock, tmp_path, monkeypatch):
+    """The manual path: pick a camera, then PROVIDE your own render as a file — no
+    auto-render, and it works with no Max at all (IN_MAX left False here). The base is
+    tagged to the picked camera so cam-exposure moves target that node."""
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    # a real render file on disk, so PIL genuinely opens it (no PIL monkeypatch)
+    p = tmp_path / "my_hero_render.png"
+    _pil(fill=(90, 110, 150)).save(str(p))
+    monkeypatch.setattr(
+        dockmod.QtWidgets.QFileDialog, "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(p), "Images (*.png)")),
+    )
+
+    d = make_dock()
+    assert d.base_capture is None
+    # a picked camera is remembered against the base you provide
+    d.cam_box.addItem("Cam_Living")
+    d.cam_box.setCurrentText("Cam_Living")
+
+    d._pick_base()
+
+    assert d.base_capture is not None                 # your own render is now the base
+    assert d.session["active_camera"] == "Cam_Living"  # tagged to the picked camera
+    assert d.base_btn.isEnabled()                      # usable even with no Max

@@ -137,38 +137,50 @@ class LightMatchDock(QtWidgets.QWidget):
         # reference + base
         io_row = QtWidgets.QHBoxLayout()
         self.ref_btn = QtWidgets.QPushButton("Reference…")
+        self.ref_btn.setToolTip("Load the target image you're matching TOWARD (the look you want).")
         self.ref_btn.clicked.connect(self._pick_reference)
+        self.base_btn = QtWidgets.QPushButton("Base…")
+        self.base_btn.setToolTip("Load YOUR OWN render (a saved image file) as the base to match — you render "
+                                 "however you like, then provide the file. No auto-render; works even outside Max.")
+        self.base_btn.clicked.connect(self._pick_base)
         self.grab_btn = QtWidgets.QPushButton("Grab VFB")
+        self.grab_btn.setToolTip("Use the render already in Max's V-Ray frame buffer as the base.")
         self.grab_btn.clicked.connect(lambda: self._grab(base=True))
         self.render_btn = QtWidgets.QPushButton("Render view")
+        self.render_btn.setToolTip("Optional convenience: auto-render the active view as the base.")
         self.render_btn.clicked.connect(lambda: self._render(base=True))
         self.sessions_btn = QtWidgets.QPushButton("Sessions ▾")
         self.sessions_btn.setToolTip("Reopen a past session (its reference + last recipe) or start a new one.")
         self.sessions_btn.clicked.connect(self._open_sessions)
         io_row.addWidget(self.ref_btn)
+        io_row.addWidget(self.base_btn)
         io_row.addWidget(self.grab_btn)
         io_row.addWidget(self.render_btn)
         io_row.addWidget(self.sessions_btn)
         lay.addLayout(io_row)
 
-        # camera scope — pick a scene camera, render ITS view, and stamp cam-exposure
-        # moves onto that exact node (so cam.iso/fnumber/shutter don't hit first-of-kind).
+        # camera scope — pick WHICH scene camera your camera-exposure moves target
+        # (cam.iso/fnumber/shutter land on that exact node, not first-of-kind). Picking is
+        # passive: it does NOT move the viewport or render. You provide the base render
+        # yourself (Base… / Grab VFB). Render camera is an optional auto-render convenience.
         cam_row = QtWidgets.QHBoxLayout()
         self.cam_box = QtWidgets.QComboBox()
-        self.cam_box.setToolTip("Scene camera to render and to target with camera-exposure moves.")
+        self.cam_box.setToolTip("Scene camera your camera-exposure moves target. Picking is passive — "
+                                "you provide the render yourself (Base… / Grab VFB).")
         self.cam_refresh_btn = QtWidgets.QPushButton("⟳")
         self.cam_refresh_btn.setToolTip("Rescan scene cameras")
         self.cam_refresh_btn.setFixedWidth(28)
         self.cam_refresh_btn.clicked.connect(self._refresh_cameras)
         self.render_cam_btn = QtWidgets.QPushButton("Render camera")
-        self.render_cam_btn.setToolTip("Point the active viewport at the picked camera, then render it.")
+        self.render_cam_btn.setToolTip("Optional: point the active viewport at the picked camera and auto-render it. "
+                                       "Skip this if you'd rather render yourself and load it with Base….")
         self.render_cam_btn.clicked.connect(self._render_camera)
         cam_row.addWidget(self.cam_box, 1)
         cam_row.addWidget(self.cam_refresh_btn)
         cam_row.addWidget(self.render_cam_btn)
         lay.addLayout(cam_row)
 
-        self.io_label = QtWidgets.QLabel("Load a reference, then grab your current render.")
+        self.io_label = QtWidgets.QLabel("Load a reference, pick a camera, then provide your render (Base… or Grab VFB).")
         self.io_label.setWordWrap(True)
         lay.addWidget(self.io_label)
 
@@ -303,6 +315,7 @@ class LightMatchDock(QtWidgets.QWidget):
         # itself). Sessions is disabled only while busy — swapping the session mid-run
         # would pull state out from under the worker.
         self.ref_btn.setEnabled(not busy)
+        self.base_btn.setEnabled(not busy)  # file load — no Max needed, usable standalone
         self.analyze_btn.setEnabled(not busy)
         self.sessions_btn.setEnabled(not busy)
         # Scene I/O + diagnostics + camera rescan need Max.
@@ -385,6 +398,25 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception as e:
             self.status.setText(f"Couldn't read that image: {e}")
             return
+        self._io_note()
+
+    def _pick_base(self):
+        """Load YOUR OWN render (an image file) as the base to match — the manual path:
+        you render however you like, then provide the file. No auto-render, and it works
+        even outside Max (file I/O only). If a camera is picked, the base is tagged to it
+        so cam-exposure moves target that camera's node."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Base render", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if not path:
+            return
+        try:
+            from PIL import Image
+            self.base_capture = sess.capture(Image.open(path))
+        except Exception as e:
+            self.status.setText(f"Couldn't read that image: {e}")
+            return
+        cam = self._active_camera()
+        if cam:
+            self.session["active_camera"] = cam
         self._io_note()
 
     # -- sessions: reopen past work (reference + last recipe) or start fresh -----------
