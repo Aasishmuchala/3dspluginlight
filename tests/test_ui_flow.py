@@ -288,3 +288,44 @@ def test_dock_autopilot_runs_and_reports(make_dock, tmp_path, monkeypatch):
     d._autopilot()
     _drain(d, timeout_ms=6000)
     assert "MATCHED" in d.score_label.text() or "matched" in d.status.text().lower()
+
+
+def test_camera_picker_render_and_stamp(make_dock, tmp_path, monkeypatch):
+    """Stage 1: the picker populates from the scene, 'Render camera' renders the PICKED
+    camera and records it, and the B1 stamp reaches the Apply path — every physical-camera
+    recipe row lands on the picked camera's exact node, non-camera rows untouched."""
+    monkeypatch.setattr(sess, "SESS_DIR", tmp_path)
+    monkeypatch.setattr(sess, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(dockmod, "IN_MAX", True)
+    monkeypatch.setattr(
+        dockmod.maxscene, "list_cameras",
+        lambda: [{"name": "Cam_Kitchen", "class": "VRayPhysicalCamera", "exposure_on": True}],
+    )
+    monkeypatch.setattr(dockmod.maxvfb, "render_camera", lambda name, *a, **k: _pil())
+
+    d = make_dock()
+
+    # picker populates and selects the scene camera
+    d._refresh_cameras()
+    assert d.cam_box.findText("Cam_Kitchen") >= 0
+    d.cam_box.setCurrentText("Cam_Kitchen")
+    assert d._active_camera() == "Cam_Kitchen"
+
+    # 'Render camera' points the viewport at it, renders IT, and records the pick
+    d._render_camera()
+    assert d.base_capture is not None
+    assert d.session["active_camera"] == "Cam_Kitchen"
+
+    # B1: a physical-camera row gets stamped with the picked node; a global does NOT
+    d._fill_table(
+        [
+            {"param": "cam.iso", "set": 260, "from": 320},
+            {"param": "sun.intensity_mult", "set": 1.6, "from": 1.35},
+        ],
+        "set",
+    )
+    checked = d._checked_values()
+    cam_row = next(r for r in checked if r["param"] == "cam.iso")
+    sun_row = next(r for r in checked if r["param"] == "sun.intensity_mult")
+    assert cam_row.get("node") == "Cam_Kitchen"   # stamp reached the apply path
+    assert "node" not in sun_row                  # global untouched

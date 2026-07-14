@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..core import autopilot, data, depth_evidence as depthmod, engine, session as sess
+from ..core import autopilot, data, depth_evidence as depthmod, engine, scope, session as sess
 from ..core.census_format import census_block, census_warnings, summarize_for_ui
 from ..core.metrics import match_percent
 from ..core.omega import DEFAULT_MODEL, OmegaError
@@ -72,6 +72,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.apRow.connect(self._ap_row)
         self._mainCall.connect(self._exec_main_call)
         self._update_buttons(busy=False)
+        self._refresh_cameras()  # populate the picker from the live scene (best-effort)
 
     # -- main-thread marshalling: 3ds Max / pymxs is MAIN-THREAD-ONLY, so every scene
     # read or mutation must run on the GUI thread. Worker threads (which carry the slow
@@ -149,6 +150,23 @@ class LightMatchDock(QtWidgets.QWidget):
         io_row.addWidget(self.render_btn)
         io_row.addWidget(self.sessions_btn)
         lay.addLayout(io_row)
+
+        # camera scope — pick a scene camera, render ITS view, and stamp cam-exposure
+        # moves onto that exact node (so cam.iso/fnumber/shutter don't hit first-of-kind).
+        cam_row = QtWidgets.QHBoxLayout()
+        self.cam_box = QtWidgets.QComboBox()
+        self.cam_box.setToolTip("Scene camera to render and to target with camera-exposure moves.")
+        self.cam_refresh_btn = QtWidgets.QPushButton("⟳")
+        self.cam_refresh_btn.setToolTip("Rescan scene cameras")
+        self.cam_refresh_btn.setFixedWidth(28)
+        self.cam_refresh_btn.clicked.connect(self._refresh_cameras)
+        self.render_cam_btn = QtWidgets.QPushButton("Render camera")
+        self.render_cam_btn.setToolTip("Point the active viewport at the picked camera, then render it.")
+        self.render_cam_btn.clicked.connect(self._render_camera)
+        cam_row.addWidget(self.cam_box, 1)
+        cam_row.addWidget(self.cam_refresh_btn)
+        cam_row.addWidget(self.render_cam_btn)
+        lay.addLayout(cam_row)
 
         self.io_label = QtWidgets.QLabel("Load a reference, then grab your current render.")
         self.io_label.setWordWrap(True)
@@ -255,7 +273,8 @@ class LightMatchDock(QtWidgets.QWidget):
         lay.addWidget(self.status)
 
         if not IN_MAX:
-            for b in (self.grab_btn, self.render_btn, self.apply_btn, self.check_btn, self.autopilot_btn):
+            for b in (self.grab_btn, self.render_btn, self.render_cam_btn, self.cam_refresh_btn,
+                      self.apply_btn, self.check_btn, self.autopilot_btn):
                 b.setEnabled(False)
             self.status.setText("Standalone preview (no pymxs) — Max-only actions disabled.")
         else:
@@ -286,9 +305,12 @@ class LightMatchDock(QtWidgets.QWidget):
         self.ref_btn.setEnabled(not busy)
         self.analyze_btn.setEnabled(not busy)
         self.sessions_btn.setEnabled(not busy)
-        # Scene I/O + diagnostics need Max.
-        for b in (self.grab_btn, self.render_btn, self.diag_btn):
+        # Scene I/O + diagnostics + camera rescan need Max.
+        for b in (self.grab_btn, self.render_btn, self.diag_btn, self.cam_refresh_btn):
             b.setEnabled(not busy and IN_MAX)
+        # Render-camera additionally needs at least one camera in the picker, so the
+        # button never reads as live when there's nothing to render (matches _refresh_cameras).
+        self.render_cam_btn.setEnabled(not busy and IN_MAX and self.cam_box.count() > 0)
         # Apply / Check / Autopilot need Max AND a recipe on the table — disabled on
         # first open so the artist is guided to Analyze first, not into a dead-end.
         for b in (self.apply_btn, self.check_btn, self.autopilot_btn):
@@ -463,6 +485,51 @@ class LightMatchDock(QtWidgets.QWidget):
         self._busy(False, "")
         self._io_note()
 
+    # -- camera scope: pick a scene camera, render ITS view, target its exposure ---------
+    def _active_camera(self) -> Optional[str]:
+        return self.cam_box.currentText().strip() or None
+
+    def _refresh_cameras(self):
+        """Rescan the scene's cameras into the picker (MAIN thread — this runs in a GUI
+        slot). Preserves the current selection if it still exists. Best-effort: outside
+        Max, or on any scene-read failure, leave the picker as-is. Never raises."""
+        if not IN_MAX:
+            return
+        try:
+            cams = maxscene.list_cameras()
+        except Exception:
+            return
+        keep = self._active_camera()
+        self.cam_box.blockSignals(True)
+        self.cam_box.clear()
+        self.cam_box.addItems([c.get("name", "") for c in cams if c.get("name")])
+        if keep is not None:
+            i = self.cam_box.findText(keep)
+            if i >= 0:
+                self.cam_box.setCurrentIndex(i)
+        self.cam_box.blockSignals(False)
+        self.render_cam_btn.setEnabled(self.cam_box.count() > 0)
+
+    def _render_camera(self):
+        """Render the picked camera's view (main-thread, blocking) — mirrors _render(base=True)
+        but points the viewport at THAT camera first, and remembers it as the session's
+        active camera so cam-exposure moves get stamped onto its node."""
+        name = self._active_camera()
+        if not name:
+            self.status.setText("Pick a camera to render.")
+            return
+        self._busy(True, f"Rendering {name}…")
+        QtWidgets.QApplication.processEvents()
+        try:
+            img = maxvfb.render_camera(name)
+            self.base_capture = sess.capture(img)
+            self.session["active_camera"] = name
+        except Exception as e:
+            self._busy(False, str(e))
+            return
+        self._busy(False, "")
+        self._io_note()
+
     def _io_note(self):
         r = "✓ reference" if self.session.get("ref") else "reference missing"
         b = "✓ render" if self.base_capture else "render missing"
@@ -486,6 +553,7 @@ class LightMatchDock(QtWidgets.QWidget):
             self.census_label.setText(summarize_for_ui(census, warnings))
         except Exception:
             pass
+        self._refresh_cameras()  # keep the picker in sync with the freshly-read scene
         return live, renderer, census_text, warnings
 
     def _depth_text(self) -> Optional[str]:
@@ -664,7 +732,8 @@ class LightMatchDock(QtWidgets.QWidget):
         for r in range(self.table.rowCount()):
             if self.table.item(r, 0).checkState() == QtCore.Qt.Checked:
                 out.append(self.table.item(r, 1).data(QtCore.Qt.UserRole))
-        return out
+        # B1: stamp cam-exposure moves onto the picked camera's exact node before Apply.
+        return scope.stamp_camera_node(out, self._active_camera())
 
     def _format_apply(self, res: dict) -> str:
         bits = [f"applied {len(res.get('applied', []))}"]
@@ -771,7 +840,10 @@ class LightMatchDock(QtWidgets.QWidget):
             return score, corr
 
         def apply_cb(moves):
-            return self._run_on_main(lambda: maxscene.apply_values(moves))
+            # B1: stamp cam-exposure moves onto the picked camera's node in the loop too.
+            return self._run_on_main(
+                lambda: maxscene.apply_values(scope.stamp_camera_node(moves, self._active_camera()))
+            )
 
         self._busy(True, f"Autopilot: up to {rounds} rounds…")
         self._update_buttons(busy=True)  # enables Stop (via _ap_running)

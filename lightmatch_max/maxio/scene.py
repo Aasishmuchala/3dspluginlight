@@ -436,3 +436,46 @@ def collect_census() -> dict:
         "cameras": len(census["cameras"]),
     }
     return census
+
+
+# ---------------------------------------------------------------------------------
+# CAMERA SCOPE (Stage 1) — the picker's source + the "render THIS camera" plumbing.
+# list_cameras mirrors collect_census's camera block; set_active_camera points the
+# viewport so a render captures the picked camera's view (and lets B1 stamp the
+# exact node name onto cam.* moves).
+# ---------------------------------------------------------------------------------
+def list_cameras() -> list[dict]:
+    """[{"name", "class", "exposure_on"}] for every camera node in the scene — the
+    picker's source. exposure_on is bool ONLY for VRayPhysicalCamera, else None. Fully
+    guarded (per-node try/except); returns [] on any failure."""
+    try:
+        rt = _rt()
+    except Exception:
+        return []
+    out: list[dict] = []
+    for cam in _try(lambda: list(rt.cameras), []) or []:
+        try:
+            cls = _str(_try(lambda: rt.classOf(cam)))
+            out.append({
+                "name": _str(_try(lambda: cam.name)) or "?",
+                "class": cls,
+                "exposure_on": _try(lambda: bool(cam.exposure)) if cls == "VRayPhysicalCamera" else None,
+            })
+        except Exception:
+            continue
+    return out
+
+
+def set_active_camera(name: str) -> bool:
+    """Point the active viewport at the named camera node so a render captures ITS view.
+    Returns True on success, False if the camera is not found or the viewport call fails.
+    Raises LightMatchMaxError only when pymxs is unavailable (via _rt())."""
+    rt = _rt()
+    node = _node_by_name(rt, name)
+    if node is None:
+        return False
+    try:
+        rt.viewport.setCamera(node)
+        return True
+    except Exception:
+        return False

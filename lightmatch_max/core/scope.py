@@ -11,6 +11,27 @@ def scope_of(param_id: str) -> str:
     return knownprops()["prefix_scope"].get(prefix, "global")
 
 
+def stamp_camera_node(values, camera_name):
+    """Stamp physical-camera moves with the PICKED camera's exact scene-node name so
+    cam.iso / cam.fnumber / cam.shutter land on THAT physical camera, not the renderer's
+    first-of-kind. Returns a NEW list; a camera-param row (known_props[param].node == "cam")
+    with no explicit non-empty 'node' gets a shallow copy carrying node=camera_name. Every
+    other row — non-camera params, rows already node-targeted, non-dicts — passes through
+    untouched. No-op when camera_name is falsy. NEVER mutates the input rows."""
+    if not camera_name:
+        return values
+    kp = knownprops()["known_props"]
+    out = []
+    for it in values:
+        if isinstance(it, dict) and kp.get(it.get("param"), {}).get("node") == "cam" and not it.get("node"):
+            row = dict(it)  # shallow copy — leave the caller's row untouched
+            row["node"] = camera_name
+            out.append(row)
+        else:
+            out.append(it)
+    return out
+
+
 def withhold_globals(cleaned: dict, items_key: str) -> dict:
     """Area-mode enforcement belt (port of the engine's withholdGlobals): strip
     scene-global moves from recipe `values` / correction `moves`, parking them on

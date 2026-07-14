@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-from .scene import LightMatchMaxError, _rt
+from .scene import LightMatchMaxError, _rt, set_active_camera
 
 
 def _bitmap_to_pil(rt, bmp):
@@ -55,6 +55,15 @@ def render_view(width: int = 0, height: int = 0):
     except Exception as e:
         raise LightMatchMaxError(f"Render failed: {e}") from e
     return _bitmap_to_pil(rt, bmp)
+
+
+def render_camera(name, width: int = 0, height: int = 0):
+    """Point the active viewport at the named camera, then render it (blocking) → PIL
+    image. Raise LightMatchMaxError if the camera can't be found, else delegate to
+    render_view — so the capture is of THAT physical camera's view (camera-scoped)."""
+    if not set_active_camera(name):
+        raise LightMatchMaxError(f"Camera not found: {name!r}")
+    return render_view(width, height)
 
 
 def grab_z_depth(width: int = 0, height: int = 0):
