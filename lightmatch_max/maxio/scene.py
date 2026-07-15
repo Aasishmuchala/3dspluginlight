@@ -100,6 +100,45 @@ def _node_for(rt, node: str, create: bool = False):
         if found is None and create:
             found = rt.VRayPhysicalCamera()
         return found
+    if node == "amb":
+        return _first_instance(rt, "VRayAmbientLight")
+    return None
+
+
+_COLOR_NAMES = {
+    "white": (255, 255, 255), "neutral": (255, 255, 255), "warm white": (255, 236, 210),
+    "cool white": (230, 240, 255), "grey": (128, 128, 128), "gray": (128, 128, 128),
+    "warm grey": (120, 110, 95), "warm gray": (120, 110, 95), "amber": (255, 176, 90),
+    "warm amber": (255, 194, 122), "pale warm amber": (255, 224, 184), "golden": (255, 200, 110),
+    "gold": (255, 200, 110), "orange": (255, 160, 60), "warm tan": (214, 184, 140),
+    "tan": (210, 190, 150), "cool blue": (150, 180, 235), "sky blue": (150, 190, 240),
+    "blue": (120, 150, 235), "warm": (255, 214, 170), "cool": (190, 210, 245),
+}
+
+
+def _parse_color(raw):
+    """Best-effort colour description -> (r,g,b) 0..255. Handles 'RGB(r,g,b)' / '(r,g,b)' /
+    'r,g,b', '#rrggbb', and the warm/cool NAMES the model emits ('warm amber', 'warm grey
+    ~RGB(80,70,55)'). Longest name wins so 'warm amber' beats 'amber'/'warm'. None if
+    nothing parseable is found (row then fails honestly, writes nothing)."""
+    import re
+    if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+        try:
+            return tuple(max(0, min(255, int(raw[i]))) for i in range(3))
+        except Exception:
+            return None
+    s = str(raw)
+    m = re.search(r"(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})", s)
+    if m:
+        return tuple(max(0, min(255, int(x))) for x in m.groups())
+    m = re.search(r"#([0-9a-fA-F]{6})", s)
+    if m:
+        h = m.group(1)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    low = s.lower()
+    for name in sorted(_COLOR_NAMES, key=len, reverse=True):
+        if name in low:
+            return _COLOR_NAMES[name]
     return None
 
 
@@ -384,6 +423,15 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     if not math.isfinite(val):
                         failed.append(param)
                         continue
+                elif m["type"] == "color":
+                    # The model emits colours as descriptions ("warm amber", "warm grey
+                    # ~RGB(80,70,55)"); parse to RGB. These write VRaySun/VRayLight/ambient
+                    # colour — a scene-node change Chaos Vantage reflects. (2026-07-16)
+                    rgb = _parse_color(raw)
+                    if rgb is None:
+                        failed.append(param)
+                        continue
+                    val = rt.color(float(rgb[0]), float(rgb[1]), float(rgb[2]))
                 else:  # enum — only a known option string maps to its int
                     options = {k.lower(): int(x) for k, x in m.get("options", {}).items()}
                     key = str(raw).strip().lower()
@@ -419,13 +467,14 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                             node.exposure = True
                         except Exception:
                             pass
-                    # color_temperature only affects the render when the light's color_mode
-                    # is Temperature (else the RGB color wins) — flip it after a successful
-                    # set, mirroring the cam.exposure gate, so a warmth move actually lands
-                    # (and reflects in Chaos Vantage). (2026-07-15 Vantage work)
-                    if m.get("temperature_mode"):
+                    # A light's colour only takes effect in the matching color_mode: RGB
+                    # `color` needs color_mode=0, `color_temperature` needs color_mode=1.
+                    # Flip it after a successful set (mirrors the cam.exposure gate) so the
+                    # warmth/tint actually lands and reflects in Vantage. (2026-07-15/16)
+                    csm = m.get("color_mode_set")
+                    if csm is not None:
                         try:
-                            node.color_mode = 1
+                            node.color_mode = int(csm)
                         except Exception:
                             pass
                     applied.append(param)
@@ -489,6 +538,9 @@ def _values_match(read, expected, kind: str) -> bool:
             return abs(float(read) - float(expected)) <= max(1e-4, abs(float(expected)) * 1e-4)
         if kind == "bool":
             return bool(read) == bool(expected)
+        if kind == "color":
+            return all(abs(float(getattr(read, c)) - float(getattr(expected, c))) <= 2.0
+                       for c in ("r", "g", "b"))
         return int(read) == int(expected)  # enum
     except Exception:
         return False
