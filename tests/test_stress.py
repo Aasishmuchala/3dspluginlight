@@ -246,6 +246,24 @@ def test_apply_values_float_boundary_never_setattrs_nonfinite(monkeypatch):
             f"{bad!r} overwrote the node before the guard: setattr risk"
 
 
+def test_parse_color_handles_names_rgb_hex_object_and_garbage():
+    # _parse_color turns the model's colour DESCRIPTIONS (and snapshot color objects) into
+    # RGB; it must never return an out-of-range tuple, must prefer the longest name match,
+    # and must return None (fail honestly) on nonsense rather than guess.
+    from lightmatch_max.maxio.scene import _parse_color
+    assert _parse_color("warm amber") == (255, 194, 122)
+    assert _parse_color("warm grey ~RGB(80,70,55)") == (80, 70, 55)   # explicit RGB wins over the name
+    assert _parse_color("pale warm amber") == (255, 224, 184)         # longest name beats "amber"/"warm"
+    assert _parse_color("#ffcc88") == (255, 204, 136)
+    assert _parse_color("RGB(300,70,999)") == (255, 70, 255)          # out-of-range clamped
+    assert _parse_color([12, 34, 56]) == (12, 34, 56)
+    assert _parse_color("mauve-ish nonsense") is None                 # unparseable -> None (row fails)
+
+    class _Col:  # a live Max color object (snapshot round-trip path)
+        r, g, b = 90.4, 80.6, 60.1
+    assert _parse_color(_Col()) == (90, 81, 60)
+
+
 def test_history_rounds_survives_a_corrupt_attempts_list():
     # A hand-edited / hand-portable session (the module docstring invites this) can carry a
     # non-dict attempt (or non-dict recipe); history_rounds is on the correction path and

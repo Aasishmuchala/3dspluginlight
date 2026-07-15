@@ -272,6 +272,19 @@ def pull_settings(camera_name: Optional[str] = None) -> dict[str, Any]:
     missing: list[str] = []
     nodes_cache: dict[str, Any] = {}
     for param, m in props.items():
+        # sun ANGLE has no simple property — read the sun's current geometry so the
+        # snapshot (Save look / keep-best) can restore elevation/azimuth too.
+        if m.get("type") == "sun_angle":
+            s = _proper_node(rt, "VRaySun")
+            if s is None:
+                missing.append(param)
+                continue
+            try:
+                el, az = _sun_current_angles(rt, s)
+                params[param] = el if m.get("angle") == "elevation" else az
+            except Exception:
+                missing.append(param)
+            continue
         node_key = m["node"]
         if node_key not in nodes_cache:
             if node_key == "cam" and camera_name:
@@ -305,6 +318,13 @@ def pull_settings(camera_name: Optional[str] = None) -> dict[str, Any]:
             params[param] = label
         elif m["type"] == "bool":
             params[param] = bool(raw)
+        elif m["type"] == "color":
+            # store JSON-serialisable [r,g,b] (Save look persists params to the session
+            # JSON, so a live Max color object can't go in); _parse_color reads it back.
+            try:
+                params[param] = [int(round(float(raw.r))), int(round(float(raw.g))), int(round(float(raw.b)))]
+            except Exception:
+                missing.append(param)
         else:
             try:
                 params[param] = float(raw)
@@ -359,18 +379,29 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
         angle_rows = [v for v in values if isinstance(v.get("param"), str)
                       and props.get(v["param"], {}).get("type") == "sun_angle"]
         if angle_rows:
-            aname = next((v.get("node") for v in angle_rows
-                          if isinstance(v.get("node"), str) and v.get("node")), None)
-            # sun-angle needs a PROPER node wrapper (transform access), so resolve via
-            # rt.objects, honoring an explicit node name for a specific sun.
-            sun = _proper_node(rt, "VRaySun", aname)
-            if sun is None:
-                for v in angle_rows:
-                    failed.append(str(v.get("param")))
-            else:
+            # GROUP by explicit node name (None = first-of-kind) so a multi-sun scene sets
+            # each sun's angle on ITS OWN node instead of collapsing every row onto the
+            # first sun. sun-angle needs a PROPER node wrapper (transform access) -> _proper_node.
+            groups: dict = {}
+            for v in angle_rows:
+                nm = v.get("node") if isinstance(v.get("node"), str) and v.get("node") else None
+                groups.setdefault(nm, []).append(v)
+            for nm, grp in groups.items():
+                sun = _proper_node(rt, "VRaySun", nm)
+                if sun is None:
+                    for v in grp:
+                        failed.append(str(v.get("param")))
+                    continue
+                # A free (targetless) VRaySun is aimed by its ROTATION, not its position, so
+                # translating it can't be trusted to re-aim it — report unverified rather than
+                # a false 'verified'. Targeted suns (the standard rig) verify normally.
+                try:
+                    has_target = getattr(sun, "target", None) is not None
+                except Exception:
+                    has_target = False
                 tgt_el, tgt_az = _sun_current_angles(rt, sun)
                 usable = []
-                for v in angle_rows:
+                for v in grp:
                     try:
                         val = float(v.get("set"))
                         if not math.isfinite(val):
@@ -382,21 +413,22 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     else:
                         tgt_az = val
                     usable.append(v)
-                if usable:
-                    try:
-                        _set_sun_angles(rt, sun, tgt_el, tgt_az)
-                        ach_el, ach_az = _sun_current_angles(rt, sun)
-                        for v in usable:
-                            which = props[v["param"]]["angle"]
-                            want, got = (tgt_el, ach_el) if which == "elevation" else (tgt_az, ach_az)
-                            diff = abs(want - got)
-                            if which == "azimuth":
-                                diff = min(diff, 360.0 - diff)
-                            applied.append(v["param"])
-                            (verified if diff < 0.5 else unverified).append(v["param"])
-                    except Exception:
-                        for v in usable:
-                            failed.append(str(v.get("param")))
+                if not usable:
+                    continue
+                try:
+                    _set_sun_angles(rt, sun, tgt_el, tgt_az)
+                    ach_el, ach_az = _sun_current_angles(rt, sun)
+                    for v in usable:
+                        which = props[v["param"]]["angle"]
+                        want, got = (tgt_el, ach_el) if which == "elevation" else (tgt_az, ach_az)
+                        diff = abs(want - got)
+                        if which == "azimuth":
+                            diff = min(diff, 360.0 - diff)
+                        applied.append(v["param"])
+                        (verified if (has_target and diff < 0.5) else unverified).append(v["param"])
+                except Exception:
+                    for v in usable:
+                        failed.append(str(v.get("param")))
             values = [v for v in values if v not in angle_rows]
 
         for v in values:
