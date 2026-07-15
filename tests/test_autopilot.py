@@ -143,6 +143,38 @@ def test_keep_best_no_restore_when_matched():
     assert restored == []
 
 
+def test_keep_best_restores_after_budget_even_when_last_round_was_best():
+    # last round has the best score but then applies a correction (budget exit) -> the scene
+    # is now post-apply/unmeasured, so keep-best must still roll back to that best snapshot.
+    scores = iter([10.0, 5.0])
+    snaps = iter(["A", "B"])
+    restored = []
+    res = run_autopilot(
+        rounds=2, render_cb=cap,
+        correct_cb=lambda c, n: (next(scores), corr([{"param": "cam.iso", "to": 200, "from": 300}])),
+        apply_cb=lambda m: {"applied": ["cam.iso"]},
+        snapshot_cb=lambda: next(snaps), restore_cb=lambda s: restored.append(s),
+    )
+    assert res["stop_reason"] == "budget"
+    assert restored == ["B"] and res["restored_to_best"] is True
+
+
+def test_keep_best_failed_snapshot_never_clobbers_a_good_one():
+    # the BEST-scoring round's snapshot FAILS (seam returns None) -> it must NOT become the
+    # recorded best; restore falls back to the best snapshot we could actually capture,
+    # never None.
+    scores = iter([10.0, 3.5, 12.0])  # 3.5 is best but not matched (>3)
+    snaps = iter(["A", None, "C"])    # round 2 (the best) can't be snapshotted
+    restored = []
+    res = run_autopilot(
+        rounds=3, render_cb=cap,
+        correct_cb=lambda c, n: (next(scores), corr([{"param": "cam.iso", "to": 200, "from": 300}])),
+        apply_cb=lambda m: {"applied": ["cam.iso"]},
+        snapshot_cb=lambda: next(snaps), restore_cb=lambda s: restored.append(s),
+    )
+    assert restored == ["A"]  # best RESTORABLE snapshot, never None
+
+
 def test_keep_best_noop_without_seams():
     # backward-compat: no snapshot/restore seams -> keep-best is inert, loop behaves as before.
     res = run_autopilot(

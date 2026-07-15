@@ -80,15 +80,23 @@ def run_autopilot(
     def consider_best(score: float) -> None:
         """Snapshot the CURRENT scene when it is the best-scoring one so far. The score
         measures the live scene entering this round, so the snapshot IS the state that
-        earned it."""
+        earned it. best_score and best_snap are updated ATOMICALLY: a better round whose
+        snapshot fails (seam returns None or raises) is NOT recorded, so it can never
+        clobber a good earlier best with a None we then can't restore."""
         nonlocal best_score, best_snap
-        if best_score is None or score < best_score:
-            best_score = score
-            if snapshot_cb is not None:
-                try:
-                    best_snap = snapshot_cb()
-                except Exception:
-                    pass  # a failed snapshot just leaves the prior best in place
+        if best_score is not None and score >= best_score:
+            return
+        if snapshot_cb is None:
+            best_score = score  # no seam: still track the best score for reporting
+            return
+        try:
+            snap = snapshot_cb()
+        except Exception:
+            snap = None
+        if snap is None:
+            return  # couldn't capture this better state — keep the last restorable best
+        best_score = score
+        best_snap = snap
 
     def emit(row: dict) -> None:
         rows.append(row)
@@ -154,12 +162,13 @@ def run_autopilot(
         stop_reason = f"error:{type(e).__name__}"
         error_message = str(e) or type(e).__name__
 
-    # KEEP-BEST: leave the scene at the best-scoring state, not the last one. Only acts when
-    # the loop actually ended somewhere worse than a best it captured (a 'matched' stop is
-    # already the best, so this is a no-op there).
+    # KEEP-BEST: leave the scene at the best-scoring state, not the last one. On EVERY exit
+    # except 'matched' the scene is at the last, UNMEASURED apply output (a correction was
+    # applied after the last measured score, or the loop was cancelled/errored), which is
+    # unknown quality — so roll back to the best snapshot we actually captured. 'matched'
+    # breaks BEFORE applying, so the scene there already IS the best (no restore needed).
     restored_best = False
-    if (restore_cb is not None and best_snap is not None and best_score is not None
-            and final_score is not None and final_score > best_score + 1e-9):
+    if restore_cb is not None and best_snap is not None and stop_reason != "matched":
         try:
             restore_cb(best_snap)
             restored_best = True
