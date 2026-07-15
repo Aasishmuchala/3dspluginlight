@@ -1,13 +1,14 @@
-# LightMatch for 3ds Max
+# Light for 3ds Max
+
+*(formerly LightMatch — the dock is titled **Light**)*
 
 Match your render's lighting to any reference — **natively inside 3ds Max**. Drop a
 reference image, grab your current render straight from the V-Ray frame buffer, and
-LightMatch measures both frames, returns an exact V-Ray recipe, **applies it as one
+Light measures both frames, returns an exact V-Ray recipe, **applies it as one
 undoable step**, then re-renders and re-measures until the lighting is within noise
 of the reference (97%+ measured match).
 
-This is the native sibling of the [LightMatch web app](https://github.com/Aasishmuchala/LIGHTROOM)
-(which remains the tool for **Chaos Vantage** — Vantage has no plugin surface).
+This is the native sibling of the [LightMatch web app](https://github.com/Aasishmuchala/LIGHTROOM).
 The two share one brain: `data/*.json` (prompts, control packs, verified property
 maps, and pixel-parity vectors) is **generated from the web repo's TypeScript
 source** — nothing is hand-copied, so the two products can never drift.
@@ -42,9 +43,19 @@ source** — nothing is hand-copied, so the two products can never drift.
 - **Cinematic depth** — a Z-depth pass feeds measured depth structure: subject-vs-
   background separation in stops, aerial-perspective (lifted far blacks + compressed far
   contrast), per-band tonal profile — the model speaks DP, not histogram.
-- **Autopilot** — one button runs the whole loop unattended: render → check → apply →
-  repeat until measured-matched (with oscillation/budget guards), each round one undo
-  step.
+- **Autopilot with keep-best** — one button runs the whole loop unattended: render →
+  check → apply → repeat until measured-matched (with oscillation/budget guards), each
+  round one undo step. Every round's state is snapshotted; on any exit that isn't
+  "matched" the scene is rolled back to the **best-scoring** round, never left at a bad
+  last guess.
+- **Chaos Vantage live-link, first-class** — the Vantage live-link is a running V-Ray
+  GPU IPR, and Light's sun/light moves are exactly the scene-node changes it streams.
+  The dock **detects** whether the link is running ("✓ streaming" / "○ start it"),
+  **starts or refreshes it in one click** (⚡ Vantage link — using Chaos' own reversible
+  entry point, which backs up and restores your DR state), nudges it after Apply/Restore
+  so lighting changes reliably propagate, and labels the moves Vantage can't see
+  (camera exposure / color mapping render in the V-Ray VFB only — Vantage has its own
+  camera) as **"V-Ray-render only."**
 - **No exporting** — `Grab VFB` / `Render view` reads the frame buffer directly.
 - **No assumed defaults** — the scene's real values are pulled live as the recipe's
   `from` baseline, every time.
@@ -104,13 +115,19 @@ source** — nothing is hand-copied, so the two products can never drift.
    lighting on switch** (OFF by default) to save-on-leave / restore-on-enter automatically
    — the only thing that changes your scene when you switch cameras, and each switch is
    disclosed in the status bar.
+8. *(Optional, Chaos Vantage)* Click **⚡ Vantage link** to start the live-link (V-Ray
+   GPU only) or refresh it if it's already running — every sun/light move then streams
+   into Vantage in real time. The apply status tells you whether the link is active, and
+   flags any move that only affects the V-Ray frame buffer ("won't show in Chaos
+   Vantage"). Autopilot refreshes the link once on completion so Vantage ends on the
+   matched look.
 
 ## Development
 
 ```
 python -m pip install -e .[dev,ui]
-pytest                                 # 98 core tests (TS↔numpy parity, engine, stress, census, autopilot, camera scope, per-camera session + looks)
-pytest -m ui -k <one_test_name>        # offscreen dock-flow suite — 11 ids, run ONE test per process (see below)
+pytest                                 # 115 core tests (TS↔numpy parity, engine, stress, census, autopilot, camera scope, per-camera session + looks, Vantage live-link)
+pytest -m ui -k <one_test_name>        # offscreen dock-flow suite — run ONE test per process (see below)
 python scripts/smoke_headless.py       # SMOKE_OK — core, anywhere
 ```
 
@@ -167,6 +184,42 @@ Re-sync the brain after web-repo changes:
 ```
 cd ../lightmatch/web && npx tsx scripts/export-plugin-data.ts ../../lightmatch-max/data
 ```
+
+## Status (v0.7)
+
+The Vantage + polish arc. **Chaos Vantage live-link is first-class:** the plugin
+understands that the live-link is a running V-Ray GPU IPR (read from Chaos' own
+`Vantage-LiveLink.ms`), detects it (`livelink_active`), starts/refreshes it in one
+click (**⚡ Vantage link** — via Chaos' reversible entry point so Distributed
+Rendering is backed up/restored, GPU-gated so V-Ray CPU never trips Chaos' renderer-
+switch modal), nudges it after Apply/Restore, and refreshes once when Autopilot
+finishes so Vantage ends on the matched look. Every apply now discloses whether
+scene changes are streaming, and `vfb`-domain moves (camera exposure / color
+mapping) are labeled "won't show in Chaos Vantage." The writable vocabulary is
+**44 verified parameters** (sun placement elevation/azimuth as one coupled sky-
+sphere transform, light/dome Kelvin + RGB with color-mode handling, ambient light,
+colors from names/hex/RGB/0–1 floats) — all prop names verified against live V-Ray
+classes.
+
+**Adversarially stress-tested, twice.** A 43-agent audit of the core (every
+subsystem + every claim, findings independently refuted) confirmed 9 bugs — all
+fixed: a leading thinking-spill JSON could shadow a valid recipe (`parse_json_from_text`
+now prefers the object carrying `values`/`moves`), malformed gateway bodies crashed
+past the retry loop, 0–1 float colours truncated to black, cm.type couldn't restore
+deprecated gamma modes, Autopilot skipped the reference guard, and the "non-
+destructive" diagnostic silently enabled camera Exposure. A second 16-agent audit of
+the UI confirmed 12 more — all fixed — including two systemic ones: Qt's `*` QSS
+font-size silently overrides every `QFont.setPointSize` (typography now lives in
+objectName-scoped QSS rules), and `session["context"]` was never persisted (context
+restore was a no-op since the feature shipped).
+
+**Renamed "Light"** with a quiet-luxury dock: matte near-black, one champagne-gold
+accent, wordmark header, letter-spaced section captions, capitalized context pickers
+(display label + lowercase canonical itemData, so prompts and old sessions are
+untouched), themed Sessions menu, and every button verified wired (22/22 signal
+connections). Gates: **115 core tests**, in-Max `MAX_STRESS_OK` (full apply sweep,
+hostile rejection, autopilot matched at 99% over real renders), gpt-5.5 gateway
+verified live.
 
 ## Status (v0.6)
 
