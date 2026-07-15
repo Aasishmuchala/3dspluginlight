@@ -1,79 +1,45 @@
 {
  "known_props": {
-  "sun.enabled": {
-   "node": "sun",
-   "prop": "enabled",
-   "type": "bool"
-  },
-  "sun.intensity_mult": {
-   "node": "sun",
-   "prop": "intensity_multiplier",
-   "type": "float"
-  },
-  "sun.size_mult": {
-   "node": "sun",
-   "prop": "size_multiplier",
-   "type": "float"
-  },
-  "sun.turbidity": {
-   "node": "sun",
-   "prop": "turbidity",
-   "type": "float"
-  },
-  "sun.ozone": {
-   "node": "sun",
-   "prop": "ozone",
-   "type": "float"
-  },
-  "sun.invisible": {
-   "node": "sun",
-   "prop": "invisible",
-   "type": "bool"
-  },
-  "light.on": {
-   "node": "light",
-   "prop": "on",
-   "type": "bool"
-  },
-  "light.multiplier": {
-   "node": "light",
-   "prop": "multiplier",
-   "type": "float"
-  },
-  "light.invisible": {
-   "node": "light",
-   "prop": "invisible",
-   "type": "bool"
-  },
-  "fill.plane_intensity": {
-   "node": "plane",
-   "prop": "multiplier",
-   "type": "float"
-  },
-  "dome.intensity": {
-   "node": "dome",
-   "prop": "multiplier",
-   "type": "float"
-  },
-  "cam.iso": {
-   "node": "cam",
-   "prop": "ISO",
-   "type": "float"
-  },
-  "cam.fnumber": {
-   "node": "cam",
-   "prop": "f_number",
-   "type": "float"
-  },
-  "cam.shutter": {
-   "node": "cam",
-   "prop": "shutter_speed",
-   "type": "float"
-  },
+  "sun.enabled": { "node": "sun", "prop": "enabled", "type": "bool", "domain": "scene" },
+  "sun.intensity_mult": { "node": "sun", "prop": "intensity_multiplier", "type": "float", "domain": "scene" },
+  "sun.size_mult": { "node": "sun", "prop": "size_multiplier", "type": "float", "domain": "scene" },
+  "sun.turbidity": { "node": "sun", "prop": "turbidity", "type": "float", "domain": "scene" },
+  "sun.ozone": { "node": "sun", "prop": "ozone", "type": "float", "domain": "scene" },
+  "sun.invisible": { "node": "sun", "prop": "invisible", "type": "bool", "domain": "scene" },
+  "sun.indirect_horiz_illum": { "node": "sun", "prop": "indirect_horiz_illum", "type": "float", "domain": "scene" },
+  "sun.horizon_offset": { "node": "sun", "prop": "horizon_offset", "type": "float", "domain": "scene" },
+  "sun.altitude": { "node": "sun", "prop": "altitude", "type": "float", "domain": "scene" },
+  "sun.blend_angle": { "node": "sun", "prop": "blend_angle", "type": "float", "domain": "scene" },
+  "sun.shadow_bias": { "node": "sun", "prop": "shadow_bias", "type": "float", "domain": "scene" },
+  "sun.night_blueness": { "node": "sun", "prop": "night_blueness", "type": "float", "domain": "scene" },
+  "sun.affect_diffuse": { "node": "sun", "prop": "affect_diffuse", "type": "bool", "domain": "scene" },
+  "sun.affect_specular": { "node": "sun", "prop": "affect_specular", "type": "bool", "domain": "scene" },
+  "sun.affect_atmos": { "node": "sun", "prop": "affect_atmospherics", "type": "bool", "domain": "scene" },
+  "sun.cast_atmos_shadows": { "node": "sun", "prop": "cast_atmospheric_shadows", "type": "bool", "domain": "scene" },
+  "light.on": { "node": "light", "prop": "on", "type": "bool", "domain": "scene" },
+  "light.multiplier": { "node": "light", "prop": "multiplier", "type": "float", "domain": "scene" },
+  "light.invisible": { "node": "light", "prop": "invisible", "type": "bool", "domain": "scene" },
+  "light.temperature": { "node": "light", "prop": "color_temperature", "type": "float", "domain": "scene", "temperature_mode": true },
+  "light.length": { "node": "light", "prop": "sizeLength", "type": "float", "domain": "scene" },
+  "light.width": { "node": "light", "prop": "sizeWidth", "type": "float", "domain": "scene" },
+  "light.cast_shadows": { "node": "light", "prop": "castShadows", "type": "bool", "domain": "scene" },
+  "light.double_sided": { "node": "light", "prop": "DoubleSided", "type": "bool", "domain": "scene" },
+  "light.shadow_bias": { "node": "light", "prop": "ShadowBias", "type": "float", "domain": "scene" },
+  "light.affect_diffuse": { "node": "light", "prop": "affect_diffuse", "type": "bool", "domain": "scene" },
+  "light.affect_specular": { "node": "light", "prop": "affect_specular", "type": "bool", "domain": "scene" },
+  "light.affect_reflections": { "node": "light", "prop": "affect_reflections", "type": "bool", "domain": "scene" },
+  "light.affect_atmos": { "node": "light", "prop": "affect_atmospherics", "type": "bool", "domain": "scene" },
+  "fill.plane_intensity": { "node": "plane", "prop": "multiplier", "type": "float", "domain": "scene" },
+  "dome.intensity": { "node": "dome", "prop": "multiplier", "type": "float", "domain": "scene" },
+  "dome.temperature": { "node": "dome", "prop": "color_temperature", "type": "float", "domain": "scene", "temperature_mode": true },
+  "cam.iso": { "node": "cam", "prop": "ISO", "type": "float", "domain": "vfb" },
+  "cam.fnumber": { "node": "cam", "prop": "f_number", "type": "float", "domain": "vfb" },
+  "cam.shutter": { "node": "cam", "prop": "shutter_speed", "type": "float", "domain": "vfb" },
   "cm.type": {
    "node": "renderer",
    "prop": "colorMapping_type",
    "type": "enum",
+   "domain": "vfb",
    "options": {
     "linear multiply": 0,
     "exponential": 1,

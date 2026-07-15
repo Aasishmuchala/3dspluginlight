@@ -296,6 +296,15 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                             node.exposure = True
                         except Exception:
                             pass
+                    # color_temperature only affects the render when the light's color_mode
+                    # is Temperature (else the RGB color wins) — flip it after a successful
+                    # set, mirroring the cam.exposure gate, so a warmth move actually lands
+                    # (and reflects in Chaos Vantage). (2026-07-15 Vantage work)
+                    if m.get("temperature_mode"):
+                        try:
+                            node.color_mode = 1
+                        except Exception:
+                            pass
                     applied.append(param)
                     read = _read_node_prop(node, m["prop"])
 
@@ -305,9 +314,14 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     unverified.append(param)
             except Exception:
                 failed.append(param)
+    # `vfb_only` = applied moves that write the V-Ray render/exposure pipeline (camera
+    # exposure, color mapping) — these change the V-Ray VFB but are NOT read by Chaos
+    # Vantage (it has its own camera + color pipeline), so they are invisible in a Vantage
+    # live-link review. Surfaced so the UI can tell the truth. (2026-07-15 Vantage work)
+    vfb_only = [p for p in applied if props.get(p, {}).get("domain") == "vfb"]
     return {
         "applied": applied, "failed": failed, "manual": manual,
-        "verified": verified, "unverified": unverified,
+        "verified": verified, "unverified": unverified, "vfb_only": vfb_only,
     }
 
 

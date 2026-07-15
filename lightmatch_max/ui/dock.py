@@ -962,6 +962,8 @@ class LightMatchDock(QtWidgets.QWidget):
             bits.append(f"failed: {', '.join(res['failed'])}")
         if res.get("manual"):
             bits.append(f"set by hand: {', '.join(res['manual'])}")
+        if res.get("vfb_only"):
+            bits.append(f"⚠ V-Ray-render only (won't show in Chaos Vantage): {', '.join(res['vfb_only'])}")
         return " · ".join(bits) + " — one undo step."
 
     def _apply(self):
