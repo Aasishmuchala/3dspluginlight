@@ -264,6 +264,53 @@ def test_parse_color_handles_names_rgb_hex_object_and_garbage():
     assert _parse_color(_Col()) == (90, 81, 60)
 
 
+def test_livelink_helpers_detect_and_refresh(monkeypatch):
+    # LightMatch's Vantage sync hinges on the V-Ray GPU IPR live-link. livelink_active must
+    # read vrayIsRenderingIPR honestly; refresh_livelink must stop+restart the IPR in
+    # liveLinkMode ONLY when a link is live (Chaos' recommended way to force a lighting change
+    # into Vantage), degrade to not_active/unavailable otherwise, and never raise. (2026-07-16)
+    import sys
+    import types
+
+    from lightmatch_max.maxio import scene
+
+    class _RT:
+        def __init__(self, ipr):
+            self._ipr = ipr
+            self.calls = []
+
+        def vrayIsRenderingIPR(self):
+            return self._ipr
+
+        def vrayGPUStopIPR(self):
+            self.calls.append("stop"); self._ipr = 0
+
+        def vrayGPUStartIPR(self, liveLinkMode=False):
+            self.calls.append(("start", liveLinkMode)); self._ipr = 1
+
+    def inject(rt):
+        fake = types.ModuleType("pymxs"); fake.runtime = rt
+        monkeypatch.setitem(sys.modules, "pymxs", fake)
+
+    # link NOT running -> inactive, refresh is a no-op that touches nothing
+    rt0 = _RT(0); inject(rt0)
+    assert scene.livelink_active() is False
+    assert scene.refresh_livelink() == "not_active"
+    assert rt0.calls == []  # must NOT stop/start a link that isn't running
+
+    # link RUNNING -> active, refresh stops then restarts in liveLinkMode
+    rt1 = _RT(1); inject(rt1)
+    assert scene.livelink_active() is True
+    assert scene.refresh_livelink() == "refreshed"
+    assert rt1.calls == ["stop", ("start", True)]
+    assert scene.livelink_active() is True  # came back up
+
+    # API absent (older V-Ray / not reachable) -> unavailable, still never raises
+    inject(types.SimpleNamespace())
+    assert scene.livelink_active() is False
+    assert scene.refresh_livelink() == "unavailable"
+
+
 def test_parse_color_accepts_normalised_0_to_1_floats():
     # The model (and 3D tools) routinely emit colours as 0..1 floats. A normalised float
     # triple must be SCALED by 255, not truncated to black — the old list/tuple branch did

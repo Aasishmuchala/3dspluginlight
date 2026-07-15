@@ -637,6 +637,7 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception as e:
             self.status.setText(str(e))
             return
+        self._sync_vantage(res)  # nudge the live-link so the restored look reaches Vantage
         self.status.setText("Restored look — " + self._format_apply(res))
 
     def _auto_save_look(self, cam_name: str) -> bool:
@@ -969,7 +970,29 @@ class LightMatchDock(QtWidgets.QWidget):
             bits.append(f"set by hand: {', '.join(res['manual'])}")
         if res.get("vfb_only"):
             bits.append(f"⚠ V-Ray-render only (won't show in Chaos Vantage): {', '.join(res['vfb_only'])}")
+        # Tell the user whether their SCENE-domain changes are actually reaching Vantage. The
+        # live-link is a running V-Ray GPU IPR — if it isn't running, that is WHY 'nothing
+        # changed in Vantage'. Only mention it when there's a Vantage-visible change to sync.
+        scene_moves = [p for p in res.get("applied", []) if p not in set(res.get("vfb_only") or [])]
+        if scene_moves:
+            if maxscene.livelink_active():
+                bits.append(f"✓ Chaos Vantage live-link active — {len(scene_moves)} scene change(s) streaming")
+            else:
+                bits.append("○ Chaos Vantage live-link not running — start it (V-Ray ▸ Chaos Vantage) to see these live")
         return " · ".join(bits) + " — one undo step."
+
+    def _sync_vantage(self, res: dict) -> None:
+        """On a deliberate Apply/Restore, if a Vantage live-link is running and this changed
+        scene-domain nodes, restart the link so the change reliably propagates — Chaos' own
+        recommended fix for DCC changes (lighting especially) that don't auto-stream. Best-
+        effort and main-thread (pymxs); never disturbs the apply result. NOT used in the
+        autopilot loop (a per-round link restart would be disruptive)."""
+        if not [p for p in res.get("applied", []) if p not in set(res.get("vfb_only") or [])]:
+            return
+        try:
+            self._run_on_main(maxscene.refresh_livelink)
+        except Exception:
+            pass
 
     def _apply(self):
         values = self._checked_values()
@@ -981,6 +1004,7 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception as e:
             self.status.setText(str(e))
             return
+        self._sync_vantage(res)  # nudge the live-link so the change reaches Vantage
         self.status.setText(self._format_apply(res))
 
     def _check(self):

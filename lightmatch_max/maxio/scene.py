@@ -259,6 +259,47 @@ def is_vray() -> bool:
     return "v_ray" in renderer_name().lower().replace("-", "_")
 
 
+# -- Chaos Vantage live-link ----------------------------------------------------------------
+# Vantage's live-link is a V-Ray GPU IPR session in liveLinkMode (see Chaos' own
+# Vantage-LiveLink.ms: `vrayGPUStartIPR liveLinkMode:true` over the DR protocol). The running
+# IPR is what STREAMS scene-node changes to Vantage — so a VRaySun/VRayLight change LightMatch
+# writes only shows in Vantage while that IPR is live. Chaos documents that some DCC changes
+# (lighting especially) need the link RESTARTED to propagate, hence refresh_livelink().
+def livelink_active() -> bool:
+    """True when a V-Ray GPU IPR / Chaos Vantage live-link is running right now — i.e. the
+    scene changes LightMatch applies are being streamed to Vantage. Best-effort; never raises."""
+    rt = _rt()
+    try:
+        fn = getattr(rt, "vrayIsRenderingIPR", None)
+        return bool(fn is not None and int(fn()) != 0)
+    except Exception:
+        return False
+
+
+def refresh_livelink() -> str:
+    """Best-effort nudge so scene changes reliably reach Chaos Vantage: if a live-link IPR is
+    running, stop+restart it in liveLinkMode (the 'restart the Live Link session' Chaos
+    recommends for changes — lighting especially — that don't auto-stream). Never raises.
+    Returns 'refreshed' | 'not_active' | 'unavailable'."""
+    rt = _rt()
+    try:
+        is_ipr = getattr(rt, "vrayIsRenderingIPR", None)
+        start = getattr(rt, "vrayGPUStartIPR", None)
+        stop = getattr(rt, "vrayGPUStopIPR", None)
+        if is_ipr is None or start is None or stop is None:
+            return "unavailable"
+        if int(is_ipr()) == 0:
+            return "not_active"
+        stop()
+        try:
+            start(liveLinkMode=True)
+        except Exception:
+            start()  # older V-Ray without the liveLinkMode keyword
+        return "refreshed"
+    except Exception:
+        return "unavailable"
+
+
 def _discover_renderer_prop(rt, prop: str) -> Optional[str]:
     """GPU/CPU-aware property discovery (mirrors the web export/apply): enumerate the
     ACTUAL renderer's properties and match by shape — colorMapping_type on CPU, or
