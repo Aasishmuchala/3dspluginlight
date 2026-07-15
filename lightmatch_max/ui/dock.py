@@ -869,13 +869,18 @@ class LightMatchDock(QtWidgets.QWidget):
 
         def check_apply_verify():
             # non-destructive: re-apply a param to its CURRENT value and confirm read-back.
+            # Use ONLY scene-domain scalars — NOT cam.iso, whose apply force-enables camera
+            # Exposure (scene.py apply_values) as a side-effect and would leave a diagnostic
+            # run having silently toggled the camera's exposure ON. The plumbing test is
+            # param-agnostic, so a side-effect-free scalar proves it identically. (2026-07-16 audit)
             def op():
                 p = maxscene.pull_settings()["params"]
-                for k in ("sun.turbidity", "cam.iso", "light.multiplier"):
+                for k in ("sun.turbidity", "sun.intensity_mult", "light.multiplier",
+                          "dome.intensity", "fill.plane_intensity"):
                     if k in p and isinstance(p[k], (int, float)):
                         r = maxscene.apply_values([{"param": k, "set": p[k]}])
                         return f"{k} verified" if k in r.get("verified", []) else f"{k} applied (unverified)"
-                return "no scalar param to test (scene has no sun/cam/light)"
+                return "no scalar param to test (scene has no sun/light)"
             return self._run_on_main(op)
 
         def check_marshaller():
@@ -1033,6 +1038,13 @@ class LightMatchDock(QtWidgets.QWidget):
         # Bind the ACTIVE camera's slot for the whole run — autopilot refines ONE camera,
         # even if the picker is changed mid-loop.
         slot = self._cam()
+        # Guard the reference BEFORE spawning the worker — every refine round scores against
+        # `ref`, so a recipe-carrying-but-reference-less slot (e.g. a hand-ported/legacy
+        # session) would otherwise burn a render and fail deep in the worker. Mirror the
+        # _check()/_analyze() guard (2026-07-16 stress audit).
+        if not slot.get("ref"):
+            self.status.setText("Load a reference first — Autopilot scores each round against it.")
+            return
         if not slot.get("recipe") or not self._has_recipe:
             self.status.setText("Analyze first — Autopilot then refines the recipe for you.")
             return

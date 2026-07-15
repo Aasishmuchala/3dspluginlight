@@ -199,7 +199,7 @@ def _one_recipe(key: str, model: str, system: str, content: list[dict]) -> Optio
     reply carried no recipe JSON. Raises on transport/auth (OmegaError) so the caller
     can surface it."""
     text = call(key, system, [{"role": "user", "content": content}], model=model)
-    obj = parse_json_from_text(text)
+    obj = parse_json_from_text(text, require="values")
     return obj if (obj and isinstance(obj.get("values"), list)) else None
 
 
@@ -298,7 +298,7 @@ def add_attempt(
     )
     system = data.system_prompt(target, "correction", lock_globals)
     text = call(key, system, [{"role": "user", "content": content}], model=model)
-    obj = parse_json_from_text(text)
+    obj = parse_json_from_text(text, require="moves")
     if not obj or not isinstance(obj.get("moves"), list):
         raise ValueError("the model's reply carried no correction JSON — drop the attempt again")
     correction = validate_items(target, obj, "correction")

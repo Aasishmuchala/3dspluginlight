@@ -41,8 +41,9 @@ def run() -> None:
     # -- 1. populated scene + full pull ------------------------------------------------
     sun = rt.VRaySun()
     sun.position = rt.Point3(200, -200, 300)
-    plane_l = rt.VRayLight(); plane_l.type = 0
+    plane_l = rt.VRayLight(); plane_l.type = 0   # left in default RGB mode -> light.color pulls
     dome_l = rt.VRayLight(); dome_l.type = 1
+    amb = rt.VRayAmbientLight()                  # so amb.enabled/intensity/color are discoverable
     cam = rt.VRayPhysicalCamera(); cam.position = rt.Point3(0, -250, 120)
     box = rt.Box(); box.width = 120; box.length = 120; box.height = 80
     teapot = rt.Teapot(); teapot.radius = 40; teapot.position = rt.Point3(90, 60, 0)
@@ -51,12 +52,20 @@ def run() -> None:
     log(f"renderer: {renderer_cls}")
     log(f"pull: {len(pulled['params'])} params, missing={pulled['missing']}, counts={pulled['counts']}")
     assert pulled["counts"]["suns"] == 1 and pulled["counts"]["physCams"] == 1, "scene population failed"
-    # V-Ray GPU doesn't expose colorMapping_type as a pymxs property (it's configured
-    # through a different UI surface); anything else missing on a populated scene
-    # indicates a real discoverability problem.
+    # A light's colour has TWO mutually-exclusive forms — RGB `color` (color_mode 0) and
+    # Kelvin `color_temperature` (color_mode 1) — and pull captures ONLY the ACTIVE one
+    # (so Save-look never flips a light's mode). The lights here are in default RGB mode,
+    # so the Kelvin forms (light.temperature, dome.temperature) are legitimately absent by
+    # design. cm.type is a CPU-only renderer property (V-Ray GPU configures it elsewhere).
+    # Anything ELSE missing on this fully-populated scene is a real discoverability
+    # regression. (assertion made precise 2026-07-16 stress audit)
     gpu_renderer = "gpu" in renderer_cls.lower()
-    assert len(pulled["missing"]) <= (1 if gpu_renderer else 0), \
-        f"too many missing on a populated scene: {pulled['missing']}"
+    expected_absent = {"light.temperature", "dome.temperature"}
+    if gpu_renderer:
+        expected_absent.add("cm.type")
+    unexpected = [p for p in pulled["missing"] if p not in expected_absent]
+    assert not unexpected, \
+        f"unexpected missing on a populated scene: {unexpected} (all missing: {pulled['missing']})"
 
     # -- 2. legal apply sweep — every KNOWN_PROPS param --------------------------------
     # cm.type (color mapping type) is a V-Ray CPU renderer property and is not

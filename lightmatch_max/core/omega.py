@@ -27,13 +27,31 @@ class OmegaError(RuntimeError):
 
 
 def extract_text(payload: dict) -> str:
-    blocks = payload.get("content") or []
-    return "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+    """Concatenate the text blocks of a well-formed Anthropic reply. Tolerates EVERY
+    malformed 200 shape the third-party gateway might emit — a string/dict `content`, a
+    list with non-dict items, or a non-string `text` — by degrading to '' (which routes
+    into call()'s 'the model returned no text' → retry path) instead of raising an
+    AttributeError/TypeError out of the un-guarded call site (omega.py audit 2026-07-16)."""
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    parts: list[str] = []
+    for b in blocks:
+        if isinstance(b, dict) and b.get("type") == "text":
+            t = b.get("text", "")
+            if isinstance(t, str):
+                parts.append(t)
+    return "\n".join(parts).strip()
 
 
-def parse_json_from_text(text: str) -> Optional[dict]:
+def parse_json_from_text(text: str, require: Optional[str] = None) -> Optional[dict]:
     """First balanced top-level {...} object in the reply (the model is instructed to
-    output ONLY the JSON, but thinking spill / stray prose must not break parsing)."""
+    output ONLY the JSON, but thinking spill / stray prose must not break parsing). When
+    `require` is given, prefer the first object that CONTAINS that key — so a leading
+    stray/thinking dict (e.g. `{"warm": true}`) can't shadow the real `{"values": [...]}`
+    and make analyze report 'no recipe JSON' on a reply that DID carry one. Falls back to
+    the first parseable object when none contains the key (omega.py audit 2026-07-16)."""
+    fallback: Optional[dict] = None
     start = text.find("{")
     while start != -1:
         depth = 0
@@ -58,14 +76,17 @@ def parse_json_from_text(text: str) -> Optional[dict]:
                     try:
                         obj = json.loads(text[start : i + 1])
                         if isinstance(obj, dict):
-                            return obj
+                            if require is None or require in obj:
+                                return obj
+                            if fallback is None:
+                                fallback = obj  # remember, keep scanning for a shape-valid one
                     except (json.JSONDecodeError, RecursionError, ValueError):
                         # untrusted model reply — deeply-nested JSON can raise RecursionError
-                        # from json.loads; degrade to None (no recipe), never crash analyze
+                        # from json.loads; degrade to fallback (no recipe), never crash analyze
                         break
                     break
         start = text.find("{", start + 1)
-    return None
+    return fallback
 
 
 def call(

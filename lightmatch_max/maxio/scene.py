@@ -116,11 +116,25 @@ _COLOR_NAMES = {
 }
 
 
+def _rgb255(a, b, c):
+    """Three numbers -> clamped (r,g,b) 0..255 ints. A triple lying ENTIRELY in [0,1] with a
+    fractional part is taken as a NORMALISED 0..1 float colour — the form 3D tools and the
+    model routinely emit — and scaled by 255 (so [0.2,0.25,0.3] -> (51,64,77) instead of the
+    old truncate-to-black (0,0,0)); an integer-valued triple is taken as already 0..255, so a
+    genuine 0..255 value like (26,26,26) or (1,1,1) is untouched. (2026-07-16 stress audit)"""
+    vals = [float(a), float(b), float(c)]
+    if all(0.0 <= v <= 1.0 for v in vals) and any(v != int(v) for v in vals):
+        vals = [v * 255.0 for v in vals]
+    return tuple(max(0, min(255, int(round(v)))) for v in vals)
+
+
 def _parse_color(raw):
-    """Best-effort colour description -> (r,g,b) 0..255. Handles 'RGB(r,g,b)' / '(r,g,b)' /
-    'r,g,b', '#rrggbb', and the warm/cool NAMES the model emits ('warm amber', 'warm grey
-    ~RGB(80,70,55)'). Longest name wins so 'warm amber' beats 'amber'/'warm'. None if
-    nothing parseable is found (row then fails honestly, writes nothing)."""
+    """Best-effort colour description -> (r,g,b) 0..255. Handles a live Max colour object,
+    an [r,g,b] list/tuple (0..255 ints OR 0..1 floats), 'RGB(r,g,b)' / '(r,g,b)' / 'r,g,b'
+    with integer OR float components, '#rrggbb', and the warm/cool NAMES the model emits
+    ('warm amber', 'warm grey ~RGB(80,70,55)'). Longest name wins so 'warm amber' beats
+    'amber'/'warm'. None if nothing parseable is found (row then fails honestly, writes
+    nothing)."""
     import re
     # a live Max color object (from pull_settings snapshots) — round-trips keep-best restore
     if hasattr(raw, "r") and hasattr(raw, "g") and hasattr(raw, "b"):
@@ -130,13 +144,16 @@ def _parse_color(raw):
             return None
     if isinstance(raw, (list, tuple)) and len(raw) >= 3:
         try:
-            return tuple(max(0, min(255, int(raw[i]))) for i in range(3))
+            return _rgb255(raw[0], raw[1], raw[2])
         except Exception:
             return None
     s = str(raw)
-    m = re.search(r"(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})", s)
+    m = re.search(r"(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)", s)
     if m:
-        return tuple(max(0, min(255, int(x))) for x in m.groups())
+        try:
+            return _rgb255(*m.groups())
+        except Exception:
+            return None
     m = re.search(r"#([0-9a-fA-F]{6})", s)
     if m:
         h = m.group(1)
@@ -217,6 +234,11 @@ def _set_sun_angles(rt, sun, elevation_deg, azimuth_deg):
     constraint re-aims it automatically, which is exactly the illumination direction."""
     tx, ty, tz = _sun_target_point(rt, sun)
     _, d = _sun_dir_and_dist(rt, sun)
+    # Write-boundary backstop: |elevation|>90 gives cos(el)<0, which folds the sun 180° to
+    # the wrong compass side (el=120 -> achieved el=60, azimuth off by 180). Reachable angles
+    # are already bounded upstream (validate_items + data.clamp), so this only guards a caller
+    # that bypasses validation — mirroring the non-finite float backstop. (2026-07-16 audit)
+    elevation_deg = max(-90.0, min(90.0, elevation_deg))
     er = math.radians(elevation_deg)
     ar = math.radians(azimuth_deg)
     dx = math.cos(er) * math.sin(ar)
@@ -484,6 +506,13 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     val = rt.color(float(rgb[0]), float(rgb[1]), float(rgb[2]))
                 else:  # enum — only a known option string maps to its int
                     options = {k.lower(): int(x) for k, x in m.get("options", {}).items()}
+                    # cm.type: the model only ever emits the pack's 5 legal options, but
+                    # Save-look / keep-best can capture a scene ALREADY on a deprecated gamma
+                    # mode (index 4/5) via CM_TYPE_BY_INDEX's superset. Accept those on apply
+                    # too, so Restore-look / keep-best can put the color mapping back EXACTLY
+                    # where it was instead of failing to revert it. (2026-07-16 stress audit)
+                    if param == "cm.type":
+                        options.update({v.lower(): k for k, v in CM_TYPE_BY_INDEX.items()})
                     key = str(raw).strip().lower()
                     if key not in options:
                         failed.append(param)

@@ -107,6 +107,36 @@ def test_parse_json_from_text_robustness():
     assert parse_json_from_text("no json here") is None
 
 
+def test_parse_json_prefers_object_with_required_key():
+    # A leading stray/thinking object must NOT shadow the real recipe/correction: with
+    # require=, the first object CONTAINING the key wins; without require the first object
+    # still wins (back-compat). Falls back to the first object when none has the key.
+    # (2026-07-16 omega audit)
+    from lightmatch_max.core.omega import parse_json_from_text as p
+    text = 'Analysis: {"warm": true}. Recipe: {"values": [{"param": "cam.iso", "set": 200}]}'
+    assert p(text)["warm"] is True                       # no require -> first object (back-compat)
+    assert p(text, require="values")["values"][0]["param"] == "cam.iso"   # real recipe found
+    corr = 'thinking {"note": "brighter"} then {"moves": [{"param": "sun.intensity_mult", "set": 1.2}]}'
+    assert p(corr, require="moves")["moves"][0]["set"] == 1.2
+    # none contains the key -> fall back to the first parseable object (still non-None)
+    assert p('{"a": 1} {"b": 2}', require="values")["a"] == 1
+
+
+def test_extract_text_tolerates_malformed_gateway_bodies():
+    # The third-party gateway can return odd 200 shapes; extract_text must DEGRADE to ''
+    # (which routes into call()'s retry path) instead of raising AttributeError/TypeError
+    # out of the un-guarded call site. (2026-07-16 omega audit)
+    from lightmatch_max.core.omega import extract_text
+    assert extract_text({"content": "hello"}) == ""              # content is a string
+    assert extract_text({"content": {"type": "text"}}) == ""     # content is a dict
+    assert extract_text({"content": [None, 123]}) == ""          # non-dict list items
+    assert extract_text({"content": [{"type": "text", "text": None}]}) == ""  # non-str text
+    assert extract_text({}) == ""                                # missing content
+    # the well-formed path still works and joins text blocks
+    assert extract_text({"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}) == "a\nb"
+    assert extract_text({"content": [{"type": "tool_use"}, {"type": "text", "text": "ok"}]}) == "ok"
+
+
 def test_session_history_and_cap(tmp_path, monkeypatch):
     # Stage 2: attempts/recipe/history live on a per-camera SLOT, not the session top level.
     monkeypatch.setattr(sess, "SESS_DIR", tmp_path)

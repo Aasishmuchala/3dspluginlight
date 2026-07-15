@@ -264,6 +264,22 @@ def test_parse_color_handles_names_rgb_hex_object_and_garbage():
     assert _parse_color(_Col()) == (90, 81, 60)
 
 
+def test_parse_color_accepts_normalised_0_to_1_floats():
+    # The model (and 3D tools) routinely emit colours as 0..1 floats. A normalised float
+    # triple must be SCALED by 255, not truncated to black — the old list/tuple branch did
+    # int([0.2,0.25,0.3]) -> (0,0,0), silently blacking out a light on apply/restore.
+    # (2026-07-16 stress audit)
+    from lightmatch_max.maxio.scene import _parse_color
+    assert _parse_color([0.2, 0.25, 0.3]) == (51, 64, 76)     # 0.2*255, 0.25*255, 0.3*255 (banker's)
+    assert _parse_color((1.0, 0.5, 0.0)) == (255, 128, 0)
+    assert _parse_color("0.2,0.25,0.3") == (51, 64, 76)       # bare float-comma string
+    assert _parse_color("RGB(0.2,0.25,0.3)") == (51, 64, 76)  # RGB() wrapper with float components
+    # an INTEGER triple in [0,255] is left as-is — NOT mistaken for a 0..1 colour
+    assert _parse_color([26, 26, 26]) == (26, 26, 26)
+    assert _parse_color("1,1,1") == (1, 1, 1)                 # near-black 0..255, not white
+    assert _parse_color([1.0, 1.0, 1.0]) == (1, 1, 1)         # integer-valued floats: not scaled
+
+
 def test_history_rounds_survives_a_corrupt_attempts_list():
     # A hand-edited / hand-portable session (the module docstring invites this) can carry a
     # non-dict attempt (or non-dict recipe); history_rounds is on the correction path and
