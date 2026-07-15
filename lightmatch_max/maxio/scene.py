@@ -241,7 +241,16 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
             node_name = v.get("node") if isinstance(v.get("node"), str) and v.get("node") else None
             try:
                 if m["type"] == "bool":
-                    val: Any = bool(raw) if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "on", "yes")
+                    # validate_items floats a bool control's `set` (1 -> 1.0, "1" -> 1.0),
+                    # so accept a numeric raw as a truth value; string forms still parse.
+                    # Without this, 1.0 -> str "1.0" -> not in the tuple -> False, silently
+                    # INVERTING an intended ON and disabling the light/sun (2026-07-15 audit).
+                    if isinstance(raw, bool):
+                        val: Any = raw
+                    elif isinstance(raw, (int, float)):
+                        val = float(raw) != 0.0
+                    else:
+                        val = str(raw).strip().lower() in ("1", "true", "on", "yes")
                 elif m["type"] == "float":
                     val = float(raw)  # non-numeric raises → failed
                     # float() ACCEPTS "inf"/"1e999"/"nan" → non-finite floats. The
@@ -269,9 +278,12 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
                     applied.append(param)
                     read = _read_renderer_prop(rt, found)
                 else:
-                    # named node overrides first-of-kind; falls back to kind if the name
-                    # is not found (honest failure, never a silent wrong-node write).
-                    node = _node_by_name(rt, node_name) if node_name else _node_for(rt, m["node"], create=True)
+                    # named node overrides first-of-kind. NEVER create a missing fixture: a
+                    # lighting-MATCH tool tunes fixtures that EXIST. A hallucinated
+                    # sun.*/dome.*/plane.* move for an absent node must fail honestly, not
+                    # spawn a stray light that pollutes the scene and stalls convergence
+                    # (2026-07-15 audit — the dominant real-world non-convergence cause).
+                    node = _node_by_name(rt, node_name) if node_name else _node_for(rt, m["node"], create=False)
                     if node is None:
                         failed.append(param)
                         continue

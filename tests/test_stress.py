@@ -215,15 +215,13 @@ def test_apply_values_float_boundary_never_setattrs_nonfinite(monkeypatch):
 
     class _FakeRT:
         def __init__(self):
-            self.created: list[_RecordingNode] = []
+            self.node = _RecordingNode()  # a sun ALREADY exists
 
-        def VRaySun(self):  # both the class arg (via getattr) and the constructor
-            n = _RecordingNode()
-            self.created.append(n)
-            return n
+        def VRaySun(self):  # the class arg (via getattr); apply must NOT construct one now
+            raise AssertionError("apply_values must not CREATE a fixture (2026-07-15)")
 
         def getClassInstances(self, _cls):
-            return []  # none exist -> _node_for takes the create path
+            return [self.node]  # first-of-kind resolves to the existing node
 
     fake_rt = _FakeRT()
     fake_pymxs = types.ModuleType("pymxs")
@@ -235,16 +233,17 @@ def test_apply_values_float_boundary_never_setattrs_nonfinite(monkeypatch):
     # write path, so a later "no write" assertion means the guard fired, not a dead mock.
     ok = scene.apply_values([{"param": "sun.intensity_mult", "set": 2.5}])
     assert "sun.intensity_mult" in ok["applied"]
-    assert len(fake_rt.created) == 1 and fake_rt.created[0].writes.get("intensity_multiplier") == 2.5
+    assert fake_rt.node.writes.get("intensity_multiplier") == 2.5
 
-    # each non-finite `set` (direct float or numeric string) -> failed, and NO node is even
-    # created, so setattr is never reached with a non-finite value.
+    # each non-finite `set` (direct float or numeric string) -> failed, and the float guard
+    # fires BEFORE node resolution/setattr, so the live node is never overwritten with a
+    # non-finite value (it keeps the finite 2.5 written by the control above).
     for bad in (float("inf"), float("-inf"), float("nan"), "1e999", "nan"):
-        fake_rt.created.clear()
         res = scene.apply_values([{"param": "sun.intensity_mult", "set": bad}])
         assert "sun.intensity_mult" in res["failed"], f"{bad!r} not reported failed: {res}"
         assert "sun.intensity_mult" not in res["applied"], f"{bad!r} reached apply: {res}"
-        assert fake_rt.created == [], f"{bad!r} resolved a node before the guard: setattr risk"
+        assert fake_rt.node.writes.get("intensity_multiplier") == 2.5, \
+            f"{bad!r} overwrote the node before the guard: setattr risk"
 
 
 def test_history_rounds_survives_a_corrupt_attempts_list():

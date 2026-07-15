@@ -34,6 +34,16 @@ def run() -> str:
 
     from pymxs import runtime as rt  # type: ignore
 
+    # apply_values no longer AUTO-CREATES a missing fixture (2026-07-15: creating stray
+    # lights from hallucinated moves stalled convergence). So make a VRaySun explicitly —
+    # like this smoke already makes its camera — to exercise the sun apply path.
+    try:
+        if len(rt.getClassInstances(rt.VRaySun)) == 0:
+            rt.VRaySun()
+            lines.append("created VRaySun (apply no longer auto-creates)")
+    except Exception as e:
+        lines.append(f"VRaySun create skipped: {type(e).__name__}: {e}")
+
     before = pulled["params"].get("sun.turbidity")
     res = scene.apply_values([{"param": "sun.turbidity", "set": 3.3}])
     lines.append(f"apply: {res}")

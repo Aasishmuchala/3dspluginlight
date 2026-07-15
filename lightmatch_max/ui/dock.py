@@ -1004,7 +1004,11 @@ class LightMatchDock(QtWidgets.QWidget):
         self._busy(True, f"Rendering attempt {n}…")
         QtWidgets.QApplication.processEvents()
         try:
-            img = maxvfb.render_view()  # fresh — Apply changed the scene
+            # Render the PICKED camera (matches the pull/stamp on _active_camera), not the
+            # active viewport — else the scored frame is the wrong view and never reflects
+            # the applied cam.* moves, so the loop can't converge (2026-07-15 audit).
+            _pick = self._active_camera()
+            img = maxvfb.render_camera(_pick) if _pick else maxvfb.render_view()  # fresh — Apply changed the scene
             attempt = sess.capture(img)
         except Exception as e:
             self._busy(False, f"Render failed: {e}")
@@ -1047,7 +1051,13 @@ class LightMatchDock(QtWidgets.QWidget):
         # thread), but EVERY pymxs op is marshalled onto the main thread via _run_on_main
         # — pymxs is main-thread-only.
         def render_cb():
-            return self._run_on_main(lambda: sess.capture(maxvfb.render_view()))
+            # Render the PICKED camera (matches correct_cb's pull and apply_cb's stamp on
+            # _active_camera), not the active viewport — else the scored frame never
+            # reflects the cam.* moves and the loop can't converge (2026-07-15 audit).
+            _pick = self._active_camera()
+            return self._run_on_main(
+                lambda: sess.capture(maxvfb.render_camera(_pick) if _pick else maxvfb.render_view())
+            )
 
         def correct_cb(cap, n):
             live = None
