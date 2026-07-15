@@ -30,7 +30,145 @@ from ..maxio import vfb as maxvfb
 IN_MAX = importlib.util.find_spec("pymxs") is not None
 
 TARGET = "vray7max"
-AMBER = "#e2a13a"
+AMBER = "#f0b64e"   # status accents, tuned to read on the frosted-glass surface
+GREEN = "#3fd99b"
+
+# Apple-style "liquid glass" theme (PySide6 QSS). Qt has no CSS backdrop-blur, so the frosted
+# look is built from layered translucent gradients + hairline highlights + soft rounded
+# controls over a dark gradient surface — the aesthetic reads as glass without a compositor.
+GLASS_QSS = """
+* {
+    font-family: "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI", -apple-system, sans-serif;
+    font-size: 12px;
+    color: #E9ECF1;
+    outline: 0;
+}
+QWidget#LMDock {
+    background: qlineargradient(x1:0, y1:0, x2:0.35, y2:1,
+        stop:0 rgba(53, 58, 71, 0.97), stop:0.55 rgba(38, 41, 51, 0.97), stop:1 rgba(25, 27, 34, 0.98));
+}
+QLabel { background: transparent; color: #E9ECF1; }
+QToolTip {
+    background: rgba(26, 28, 36, 0.97); color: #E9ECF1;
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 8px; padding: 6px 9px;
+}
+
+/* frosted-glass buttons */
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255,255,255,0.12), stop:1 rgba(255,255,255,0.05));
+    color: #EEF1F6; border: 1px solid rgba(255,255,255,0.17);
+    border-radius: 10px; padding: 7px 12px;
+}
+QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255,255,255,0.18), stop:1 rgba(255,255,255,0.09));
+    border: 1px solid rgba(255,255,255,0.26);
+}
+QPushButton:pressed { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.13); }
+QPushButton:disabled {
+    background: rgba(255,255,255,0.03); color: rgba(233,236,241,0.30);
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+/* primary — Apple-blue liquid glass */
+QPushButton#primaryBtn {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(99, 168, 255, 0.98), stop:1 rgba(50, 120, 246, 0.98));
+    color: #FFFFFF; font-weight: 600;
+    border: 1px solid rgba(255,255,255,0.30); border-radius: 11px; padding: 9px 12px;
+}
+QPushButton#primaryBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(124, 186, 255, 1.0), stop:1 rgba(70, 140, 255, 1.0));
+    border: 1px solid rgba(255,255,255,0.42);
+}
+QPushButton#primaryBtn:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(70, 140, 240, 1.0), stop:1 rgba(38, 104, 220, 1.0));
+}
+QPushButton#primaryBtn:disabled { background: rgba(96, 140, 210, 0.26); color: rgba(255,255,255,0.5); border: 1px solid rgba(255,255,255,0.10); }
+
+/* autopilot — mint glass */
+QPushButton#autopilotBtn {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(70, 220, 158, 0.32), stop:1 rgba(42, 176, 124, 0.32));
+    border: 1px solid rgba(96, 232, 176, 0.45); color: #EAFBF3; font-weight: 600;
+}
+QPushButton#autopilotBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(84, 230, 168, 0.44), stop:1 rgba(50, 192, 138, 0.44));
+    border: 1px solid rgba(120, 240, 190, 0.6);
+}
+QPushButton#autopilotBtn:disabled { background: rgba(70, 180, 140, 0.14); color: rgba(233,251,243,0.32); border: 1px solid rgba(120,220,180,0.15); }
+
+/* stop — soft red glass */
+QPushButton#stopBtn {
+    background: rgba(255, 99, 99, 0.20); border: 1px solid rgba(255, 124, 124, 0.42); color: #FFE7E7;
+}
+QPushButton#stopBtn:hover { background: rgba(255, 99, 99, 0.32); border: 1px solid rgba(255, 140, 140, 0.6); }
+QPushButton#stopBtn:disabled { background: rgba(255,99,99,0.07); color: rgba(255,231,231,0.3); border: 1px solid rgba(255,124,124,0.14); }
+
+/* recessed frosted fields */
+QLineEdit, QComboBox, QSpinBox {
+    background: rgba(0, 0, 0, 0.27); color: #EEF1F6;
+    border: 1px solid rgba(255,255,255,0.13); border-radius: 10px; padding: 6px 9px;
+    selection-background-color: rgba(99, 168, 255, 0.55);
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border: 1px solid rgba(99, 168, 255, 0.78); background: rgba(0, 0, 0, 0.33);
+}
+QComboBox::drop-down { border: 0; width: 22px; }
+QComboBox::down-arrow {
+    image: none; width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid rgba(233,236,241,0.7); margin-right: 9px;
+}
+QComboBox QAbstractItemView {
+    background: rgba(30, 33, 42, 0.99); color: #EEF1F6;
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 10px;
+    selection-background-color: rgba(99, 168, 255, 0.55); outline: 0; padding: 4px;
+}
+QSpinBox::up-button, QSpinBox::down-button { width: 0; border: 0; }
+
+/* checkboxes */
+QCheckBox { background: transparent; color: #C7CDD8; spacing: 7px; }
+QCheckBox::indicator {
+    width: 16px; height: 16px; border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.28); background: rgba(255,255,255,0.06);
+}
+QCheckBox::indicator:hover { border: 1px solid rgba(99,168,255,0.7); }
+QCheckBox::indicator:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(99,168,255,1.0), stop:1 rgba(50,120,246,1.0));
+    border: 1px solid rgba(124,186,255,0.9);
+}
+
+/* recipe table — frosted panel */
+QTableWidget {
+    background: rgba(0, 0, 0, 0.22); alternate-background-color: rgba(255,255,255,0.03);
+    color: #E9ECF1; border: 1px solid rgba(255,255,255,0.11); border-radius: 12px;
+    gridline-color: rgba(255,255,255,0.07);
+    selection-background-color: rgba(99, 168, 255, 0.30); selection-color: #FFFFFF;
+}
+QTableWidget::item { padding: 4px 6px; border: 0; }
+QHeaderView::section {
+    background: rgba(255,255,255,0.06); color: #AEB6C2; border: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.12); padding: 6px; font-weight: 600;
+}
+QTableCornerButton::section { background: transparent; border: 0; }
+
+/* slim glass scrollbars */
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,0.18); border-radius: 5px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.30); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle:horizontal { background: rgba(255,255,255,0.18); border-radius: 5px; min-width: 28px; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+"""
 
 
 class Worker(QtCore.QObject):
@@ -117,9 +255,15 @@ class LightMatchDock(QtWidgets.QWidget):
 
     # -- UI scaffold -------------------------------------------------------------
     def _build(self):
+        # Apple "liquid glass" theme: a styled background needs WA_StyledBackground so the
+        # QWidget subclass actually paints the QSS gradient, and an objectName so #LMDock
+        # scopes the surface fill without bleeding onto every child.
+        self.setObjectName("LMDock")
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.setStyleSheet(GLASS_QSS)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(9)
 
         # key + model row
         row = QtWidgets.QHBoxLayout()
@@ -217,11 +361,11 @@ class LightMatchDock(QtWidgets.QWidget):
 
         # scene census summary + pre-flight warnings (populated on Analyze)
         self.census_label = QtWidgets.QLabel("")
-        self.census_label.setStyleSheet("color:#8a8a8a;")
+        self.census_label.setStyleSheet("color:#9098a6;")
         lay.addWidget(self.census_label)
         self.warn_label = QtWidgets.QLabel("")
         self.warn_label.setWordWrap(True)
-        self.warn_label.setStyleSheet("color:#c47a2a;")
+        self.warn_label.setStyleSheet("color:#e0a95e;")
         lay.addWidget(self.warn_label)
 
         # context + lock
@@ -259,7 +403,7 @@ class LightMatchDock(QtWidgets.QWidget):
 
         # analyze
         self.analyze_btn = QtWidgets.QPushButton("Analyze the match")
-        self.analyze_btn.setStyleSheet(f"font-weight:600;background:{AMBER};color:#232323;padding:6px;")
+        self.analyze_btn.setObjectName("primaryBtn")  # Apple-blue liquid-glass primary action
         self.analyze_btn.clicked.connect(self._analyze)
         lay.addWidget(self.analyze_btn)
 
@@ -281,7 +425,7 @@ class LightMatchDock(QtWidgets.QWidget):
 
         self.withheld_label = QtWidgets.QLabel("")
         self.withheld_label.setWordWrap(True)
-        self.withheld_label.setStyleSheet("color:#5f7f9f;")
+        self.withheld_label.setStyleSheet("color:#84accf;")
         lay.addWidget(self.withheld_label)
 
         # apply + check
@@ -297,6 +441,7 @@ class LightMatchDock(QtWidgets.QWidget):
         # autopilot — run the whole loop unattended
         ap_row = QtWidgets.QHBoxLayout()
         self.autopilot_btn = QtWidgets.QPushButton("▶ Autopilot")
+        self.autopilot_btn.setObjectName("autopilotBtn")  # mint-glass accent
         self.autopilot_btn.setToolTip("Run the refine loop unattended: render → check → apply → repeat until matched.")
         self.autopilot_btn.clicked.connect(self._autopilot)
         self.rounds_spin = QtWidgets.QSpinBox()
@@ -305,6 +450,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.rounds_spin.setPrefix("max ")
         self.rounds_spin.setSuffix(" rounds")
         self.cancel_btn = QtWidgets.QPushButton("Stop")
+        self.cancel_btn.setObjectName("stopBtn")  # soft-red glass
         self.cancel_btn.clicked.connect(self._cancel_autopilot)
         ap_row.addWidget(self.autopilot_btn, 1)
         ap_row.addWidget(self.rounds_spin)
@@ -917,7 +1063,7 @@ class LightMatchDock(QtWidgets.QWidget):
         report = diagnostics.format_report(results)
         self._busy(False, "Diagnostics complete.")
         self.warn_label.setText(report)
-        self.warn_label.setStyleSheet("color:#2e8f5b;" if diagnostics.all_passed(results) else "color:#c47a2a;")
+        self.warn_label.setStyleSheet("color:#3fd99b;" if diagnostics.all_passed(results) else "color:#e0a95e;")
 
     def _analyze_done(self, recipe: dict, slot: Optional[dict] = None):
         (slot if slot is not None else self._cam())["recipe"] = recipe  # the camera we analyzed
@@ -1207,7 +1353,7 @@ class LightMatchDock(QtWidgets.QWidget):
             self.score_label.setText(
                 (f"{best}% — LIGHTING MATCHED" if matched else f"{best}% best match") + f" · {msg}"
             )
-            self.score_label.setStyleSheet("color:#2e8f5b;" if matched else f"color:{AMBER};")
+            self.score_label.setStyleSheet("color:#3fd99b;" if matched else f"color:{AMBER};")
         # Push the FINAL (best-scoring) scene to Vantage: the keep-best restore + each round's
         # apply wrote nodes directly, bypassing the per-apply nudge, so refresh the live-link
         # once here (best-effort) if it's running — so Vantage ends on the matched look.
@@ -1226,7 +1372,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self._fill_table(moves, val_key="to")
         if engine.matched(score):
             self.score_label.setText(f"{pct}% — LIGHTING MATCHED · stop lighting, move to grading")
-            self.score_label.setStyleSheet("color:#2e8f5b;")
+            self.score_label.setStyleSheet("color:#3fd99b;")
             self._has_recipe = bool(moves)
             self._busy(False, "Matched. If you want to keep going, apply any remaining moves and Check again.")
         elif not moves:
