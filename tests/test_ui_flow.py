@@ -148,6 +148,9 @@ def test_full_dock_flow(make_dock, tmp_path, monkeypatch):
     d._analyze()
     _drain(d)
     assert calls["n"] == 1
+    # Analyze MIRRORS the context pickers into the session — without this write,
+    # _load_session's context restore reads a key nobody set (2026-07-16 audit).
+    assert d.session.get("context") == d._context()
     # recipe table shows ONLY the kept camera+local rows; the global was withheld
     controls = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]
     assert controls == ["cam.iso", "light.multiplier"]
@@ -256,8 +259,11 @@ def test_session_picker_reloads_reference_and_recipe(make_dock, tmp_path, monkey
     assert d._cam().get("ref") is not None            # reference recalled from the slot
     assert d.base_capture is not None                 # Stage 2: the saved render PERSISTS
     assert d.lock_chk.isChecked() is True             # lock restored
-    assert d.scene_box.currentText() == "interior"    # context restored
-    assert d.time_box.currentText() == "dusk"
+    # context restored by VALUE (itemData) — the display label is capitalized ("Interior")
+    # while the stored/prompt value stays the lowercase canonical string.
+    assert d.scene_box.currentData() == "interior"
+    assert d.scene_box.currentText() == "Interior"
+    assert d.time_box.currentData() == "dusk"
     assert d._has_recipe is True
     # the table shows the LATEST correction move, not the original recipe
     params = [d.table.item(r, 1).data(QtCore.Qt.UserRole)["param"] for r in range(d.table.rowCount())]

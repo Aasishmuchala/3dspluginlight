@@ -50,15 +50,32 @@ QWidget#LMDock {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #16151B, stop:1 #100F14);
 }
 QLabel { background: transparent; color: #ECEAE3; }
+/* font SIZES must live here: the `*` font-size above beats QFont.setPointSize in Qt's
+   cascade, so sizes set via setFont silently render at 12px (2026-07-16 UI stress audit) */
+QLabel#wordmark { font-size: 20pt; font-weight: 700; color: #F1EEE6; }
+QLabel#tagline { font-size: 9pt; color: #8A857A; }
+QLabel#sectionCap { font-size: 8pt; font-weight: 600; color: #8F8A7D; }
+QLabel#scoreLabel { font-size: 12pt; font-weight: 700; }
 QToolTip {
     background: #1C1B22; color: #ECEAE3;
-    border: 1px solid rgba(255,255,255,0.10); border-radius: 8px; padding: 6px 10px;
+    border: 1px solid rgba(255,255,255,0.10); padding: 6px 10px;
 }
+/* the Sessions ▾ popup — without this it inherits near-white `*` text on a NATIVE light
+   background and is unreadable (2026-07-16 UI stress audit) */
+QMenu {
+    background: #1C1B22; color: #ECEAE3;
+    border: 1px solid rgba(255,255,255,0.12); padding: 5px;
+}
+QMenu::item { padding: 7px 22px 7px 14px; border-radius: 6px; }
+QMenu::item:selected { background: rgba(200,169,106,0.22); color: #F1EEE6; }
+QMenu::item:disabled { color: rgba(236,234,227,0.32); }
+QMenu::separator { height: 1px; background: rgba(255,255,255,0.10); margin: 5px 8px; }
 
 /* calm ghost buttons — hairline firms up on hover, no fills shouting */
 QPushButton {
     background: rgba(255,255,255,0.035); color: #E4E1D8;
-    border: 1px solid rgba(255,255,255,0.08); border-radius: 9px; padding: 8px 13px;
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
+    padding: 9px 14px; min-height: 16px;
 }
 QPushButton:hover { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.17); }
 QPushButton:pressed { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.10); }
@@ -71,7 +88,9 @@ QPushButton#primaryBtn {
 }
 QPushButton#primaryBtn:hover { background: #D6BB80; }
 QPushButton#primaryBtn:pressed { background: #B99A5B; }
-QPushButton#primaryBtn:disabled { background: rgba(200,169,106,0.22); color: rgba(26,23,18,0.5); }
+/* disabled: LIGHT text — the enabled dark-on-gold text composites to ~1.25:1 against the
+   faded translucent gold over the dark surface and vanishes (2026-07-16 UI stress audit) */
+QPushButton#primaryBtn:disabled { background: rgba(200,169,106,0.16); color: rgba(236,234,227,0.45); }
 
 /* autopilot — understated gold outline */
 QPushButton#autopilotBtn {
@@ -91,7 +110,8 @@ QPushButton#stopBtn:disabled { color: rgba(201,169,169,0.3); border: 1px solid r
 /* recessed fields */
 QLineEdit, QComboBox, QSpinBox {
     background: rgba(255,255,255,0.03); color: #ECEAE3;
-    border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px 11px;
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 9px;
+    padding: 9px 12px; min-height: 16px;
     selection-background-color: rgba(200,169,106,0.4);
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 1px solid rgba(200,169,106,0.6); }
@@ -102,8 +122,10 @@ QComboBox::down-arrow {
     border-top: 5px solid rgba(180,175,162,0.8); margin-right: 9px;
 }
 QComboBox QAbstractItemView {
+    /* no border-radius: rounded corners on a top-level popup leave opaque square
+       corner artifacts (Qt popups aren't translucent windows) */
     background: #1C1B22; color: #ECEAE3;
-    border: 1px solid rgba(255,255,255,0.10); border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.10);
     selection-background-color: rgba(200,169,106,0.35); outline: 0; padding: 4px;
 }
 QSpinBox::up-button, QSpinBox::down-button { width: 0; border: 0; }
@@ -241,15 +263,13 @@ class LightMatchDock(QtWidgets.QWidget):
         # -- wordmark header: a big, quiet "Light" + one-line what-it-does, then a hairline.
         head = QtWidgets.QVBoxLayout()
         head.setSpacing(2)
+        # sizes come from the QSS #wordmark/#tagline rules — QFont sizes lose to the theme's
+        # `*` font-size, so setFont here would silently render 12px (2026-07-16 audit)
         self.wordmark = QtWidgets.QLabel("Light")
-        wf = self.wordmark.font()
-        wf.setPointSize(20)
-        wf.setBold(True)
-        self.wordmark.setFont(wf)
-        self.wordmark.setStyleSheet("color:#ECEAE3; background:transparent;")
+        self.wordmark.setObjectName("wordmark")
         self.tagline = QtWidgets.QLabel("Match your V-Ray render's lighting to a reference image.")
+        self.tagline.setObjectName("tagline")
         self.tagline.setWordWrap(True)
-        self.tagline.setStyleSheet("color:#8A857A; background:transparent; font-size:12px;")
         head.addWidget(self.wordmark)
         head.addWidget(self.tagline)
         lay.addLayout(head)
@@ -274,7 +294,9 @@ class LightMatchDock(QtWidgets.QWidget):
         lay.addLayout(row)
 
         # reference + base
+        lay.addWidget(self._section_label("Images & camera"))
         io_row = QtWidgets.QHBoxLayout()
+        io_row.setSpacing(9)
         self.ref_btn = QtWidgets.QPushButton("Reference…")
         self.ref_btn.setToolTip("Load the target image you're matching TOWARD (the look you want).")
         self.ref_btn.clicked.connect(self._pick_reference)
@@ -312,7 +334,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.cam_box.currentTextChanged.connect(self._on_camera_changed)
         self.cam_refresh_btn = QtWidgets.QPushButton("⟳")
         self.cam_refresh_btn.setToolTip("Rescan scene cameras")
-        self.cam_refresh_btn.setFixedWidth(28)
+        self.cam_refresh_btn.setFixedWidth(36)
         self.cam_refresh_btn.clicked.connect(self._refresh_cameras)
         self.render_cam_btn = QtWidgets.QPushButton("Render camera")
         self.render_cam_btn.setToolTip("Optional: point the active viewport at the picked camera and auto-render it. "
@@ -327,7 +349,9 @@ class LightMatchDock(QtWidgets.QWidget):
         # camera's look; Restore re-applies it (undoable). Auto lighting (OFF by default)
         # does save-on-leave / restore-on-enter as you switch cameras — the only control
         # here that mutates the scene, so it is strictly opt-in.
+        lay.addWidget(self._section_label("Looks & Vantage"))
         light_row = QtWidgets.QHBoxLayout()
+        light_row.setSpacing(9)
         self.save_look_btn = QtWidgets.QPushButton("Save look")
         self.save_look_btn.setToolTip("Snapshot the scene's current lighting (sun, lights, color mapping, "
                                       "exposure) as THIS camera's look.")
@@ -362,13 +386,18 @@ class LightMatchDock(QtWidgets.QWidget):
         self.warn_label.setStyleSheet("color:#C98A55;")
         lay.addWidget(self.warn_label)
 
-        # context + lock
+        # context + lock. Display text is CAPITALIZED for the UI ("Golden hour"), but the
+        # VALUE stays the lowercase canonical string (itemData) — it goes verbatim into the
+        # model prompt and into saved sessions, and _apply_slot_to_ui restores by value, so
+        # sessions written before the capitalization keep restoring. (2026-07-16 UI polish)
+        lay.addWidget(self._section_label("Scene context"))
         ctx_row = QtWidgets.QHBoxLayout()
-        self.scene_box = QtWidgets.QComboBox(); self.scene_box.addItems(["", "interior", "exterior", "product"])
-        self.time_box = QtWidgets.QComboBox(); self.time_box.addItems(["", "dawn", "sunrise", "morning", "midday", "afternoon", "golden hour", "sunset", "dusk", "blue hour", "night"])
-        self.rig_box = QtWidgets.QComboBox(); self.rig_box.addItems(["", "HDRI dome", "sun", "both"])
+        ctx_row.setSpacing(9)
+        self.scene_box = self._ctx_combo("Scene type", ["", "interior", "exterior", "product"])
+        self.time_box = self._ctx_combo("Time of day", ["", "dawn", "sunrise", "morning", "midday", "afternoon", "golden hour", "sunset", "dusk", "blue hour", "night"])
+        self.rig_box = self._ctx_combo("Light rig", ["", "HDRI dome", "sun", "both"])
         for b in (self.scene_box, self.time_box, self.rig_box):
-            ctx_row.addWidget(b)
+            ctx_row.addWidget(b, 1)
         self.lock_chk = QtWidgets.QCheckBox("Lock scene globals")
         self.lock_chk.setToolTip("Per-area pass on a big project: sun/sky/fog/color mapping stay frozen; solve with camera + local lights only.")
         ctx_row.addWidget(self.lock_chk)
@@ -413,13 +442,16 @@ class LightMatchDock(QtWidgets.QWidget):
         lay.addWidget(self.analyze_btn)
 
         # score line
+        # size/weight from the QSS #scoreLabel rule — setFont loses to the theme's `*`
+        # font-size; the dynamic color-only setStyleSheet calls don't conflict with it.
         self.score_label = QtWidgets.QLabel("")
-        f = self.score_label.font(); f.setPointSize(11); f.setBold(True)
-        self.score_label.setFont(f)
+        self.score_label.setObjectName("scoreLabel")
         lay.addWidget(self.score_label)
 
         # recipe table
         self.table = QtWidgets.QTableWidget(0, 4)
+        # the theme declares alternate-background-color — dead unless this is on (2026-07-16)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(["apply", "control", "from → to", "why"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
@@ -434,7 +466,9 @@ class LightMatchDock(QtWidgets.QWidget):
         lay.addWidget(self.withheld_label)
 
         # apply + check
+        lay.addWidget(self._section_label("Refine"))
         act_row = QtWidgets.QHBoxLayout()
+        act_row.setSpacing(9)
         self.apply_btn = QtWidgets.QPushButton("Apply checked to scene (undoable)")
         self.apply_btn.clicked.connect(self._apply)
         self.check_btn = QtWidgets.QPushButton("Re-render && Check")
@@ -446,7 +480,7 @@ class LightMatchDock(QtWidgets.QWidget):
         # autopilot — run the whole loop unattended
         ap_row = QtWidgets.QHBoxLayout()
         self.autopilot_btn = QtWidgets.QPushButton("▶ Autopilot")
-        self.autopilot_btn.setObjectName("autopilotBtn")  # mint-glass accent
+        self.autopilot_btn.setObjectName("autopilotBtn")  # champagne-gold outline
         self.autopilot_btn.setToolTip("Run the refine loop unattended: render → check → apply → repeat until matched.")
         self.autopilot_btn.clicked.connect(self._autopilot)
         self.rounds_spin = QtWidgets.QSpinBox()
@@ -455,7 +489,7 @@ class LightMatchDock(QtWidgets.QWidget):
         self.rounds_spin.setPrefix("max ")
         self.rounds_spin.setSuffix(" rounds")
         self.cancel_btn = QtWidgets.QPushButton("Stop")
-        self.cancel_btn.setObjectName("stopBtn")  # soft-red glass
+        self.cancel_btn.setObjectName("stopBtn")  # quiet neutral, warms to red on hover
         self.cancel_btn.clicked.connect(self._cancel_autopilot)
         ap_row.addWidget(self.autopilot_btn, 1)
         ap_row.addWidget(self.rounds_spin)
@@ -490,8 +524,37 @@ class LightMatchDock(QtWidgets.QWidget):
         self.cfg["depth"] = self.depth_chk.isChecked()
         sess.save_config(self.cfg)
 
+    def _section_label(self, text: str) -> QtWidgets.QLabel:
+        """A small, letter-spaced, uppercase section caption — quiet structure between the
+        control groups. SIZE/WEIGHT come from the QSS #sectionCap rule (QFont sizes lose to
+        the theme's `*` font-size); QSS has no letter-spacing, so spacing is faked with
+        thin-space characters between letters."""
+        lab = QtWidgets.QLabel(" ".join(text.upper()))
+        lab.setObjectName("sectionCap")
+        return lab
+
+    def _ctx_combo(self, placeholder: str, values: list) -> QtWidgets.QComboBox:
+        """A context picker whose DISPLAY text is capitalized but whose VALUE (itemData) is
+        the lowercase canonical string. The blank first entry shows the placeholder role."""
+        box = QtWidgets.QComboBox()
+        for v in values:
+            label = (v[0].upper() + v[1:]) if v else placeholder
+            box.addItem(label, v)
+        box.setToolTip(placeholder)
+        return box
+
+    @staticmethod
+    def _ctx_value(box: QtWidgets.QComboBox) -> str:
+        v = box.currentData()
+        return v if isinstance(v, str) else ""
+
+    @staticmethod
+    def _set_ctx_value(box: QtWidgets.QComboBox, value: str) -> None:
+        i = box.findData(value or "")
+        box.setCurrentIndex(i if i >= 0 else 0)
+
     def _context(self) -> dict[str, str]:
-        return {"scene": self.scene_box.currentText(), "time": self.time_box.currentText(), "rig": self.rig_box.currentText()}
+        return {"scene": self._ctx_value(self.scene_box), "time": self._ctx_value(self.time_box), "rig": self._ctx_value(self.rig_box)}
 
     def _update_buttons(self, busy: bool):
         # Reference + Analyze + Sessions are always usable (Analyze guards on inputs/key
@@ -566,6 +629,11 @@ class LightMatchDock(QtWidgets.QWidget):
         wk.thread_ref.quit()
         try:
             wk.on_done(result)
+        except Exception as e:  # an on_done that throws (e.g. session save hits a read-only
+            # file / full disk) must not escape the slot and leave the dock stuck busy —
+            # give it the same guarantee _worker_fail has (2026-07-16 UI stress audit)
+            self._ap_running = False
+            self._busy(False, f"{e}\n{traceback.format_exc(limit=2)}")
         finally:
             if wk in self._workers:
                 self._workers.remove(wk)
@@ -652,9 +720,11 @@ class LightMatchDock(QtWidgets.QWidget):
             return
         self.session = s
         ctx = s.get("context") or {}
-        self.scene_box.setCurrentText(ctx.get("scene", ""))
-        self.time_box.setCurrentText(ctx.get("time", ""))
-        self.rig_box.setCurrentText(ctx.get("rig", ""))
+        # restore by VALUE (itemData), not display text — sessions store the lowercase
+        # canonical string while the combo shows a capitalized label.
+        self._set_ctx_value(self.scene_box, ctx.get("scene", ""))
+        self._set_ctx_value(self.time_box, ctx.get("time", ""))
+        self._set_ctx_value(self.rig_box, ctx.get("rig", ""))
         self.lock_chk.setChecked(bool(s.get("lock_globals")))
         # Point the picker at the session's active camera WITHOUT firing a recall (we recall
         # explicitly below). If that camera isn't in the current scene's list, show it anyway
@@ -695,7 +765,9 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception as e:
             self._busy(False, str(e))
             return
-        self._busy(False, "")
+        # a REAL completion note — _busy's `if note:` guard swallows "" and would leave the
+        # status stuck on "Rendering…" after success (2026-07-16 UI stress audit)
+        self._busy(False, "Render captured as the base.")
         self._io_note()
 
     # -- camera scope: pick a scene camera, render ITS view, target its exposure ---------
@@ -894,7 +966,8 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception as e:
             self._busy(False, str(e))
             return
-        self._busy(False, "")
+        # real note — "" is swallowed by _busy's guard and leaves "Rendering…" stuck
+        self._busy(False, f"Rendered {name} — captured as the base.")
         self._io_note()
 
     def _io_note(self):
@@ -954,6 +1027,10 @@ class LightMatchDock(QtWidgets.QWidget):
             self.warn_label.setText("")
             return False
         lines = [("⛔ " if w["severity"] == "block" else "⚠ ") + w["message"] for w in warnings]
+        # reset to the WARNING color — a prior diagnostics pass leaves this label in the
+        # success champagne, which would render a blocking warning as celebration
+        # (2026-07-16 UI stress audit)
+        self.warn_label.setStyleSheet("color:#C98A55;")
         self.warn_label.setText("\n".join(lines))
         return any(w["severity"] == "block" for w in warnings)
 
@@ -977,6 +1054,10 @@ class LightMatchDock(QtWidgets.QWidget):
         self.session["_census_text"] = census_text  # reused each Check/Autopilot round
         self.session["_renderer"] = renderer
         ref, base, ctx = slot.get("ref"), slot.get("base"), self._context()
+        # Mirror the context pickers into the session (like lock_globals above) — WITHOUT
+        # this, _load_session's context restore reads a key nobody ever wrote and every
+        # reopened session silently loses scene/time/rig (2026-07-16 UI stress audit).
+        self.session["context"] = ctx
         consensus = self.consensus_chk.isChecked()
         # Depth grab is a MAIN-THREAD render — do it here, before the worker spawns, and
         # pass the finished text in (like census_text). None when off / not usable.
@@ -1202,6 +1283,7 @@ class LightMatchDock(QtWidgets.QWidget):
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
         ctx = self._context()
+        self.session["context"] = ctx  # keep the persisted context current (see _analyze)
         ref = slot.get("ref")
         n = int(slot.get("attempt_count", 0)) + 1
         history = sess.history_rounds(slot)
@@ -1262,6 +1344,7 @@ class LightMatchDock(QtWidgets.QWidget):
         model = self.model_box.currentText()
         lock = self.lock_chk.isChecked()
         ctx = self._context()
+        self.session["context"] = ctx  # keep the persisted context current (see _analyze)
         ref = slot.get("ref")
         census_text = self.session.get("_census_text")
         renderer = self.session.get("_renderer", "")
