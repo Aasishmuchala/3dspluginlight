@@ -107,6 +107,52 @@ def test_node_passthrough_and_withheld_never_applied():
     assert all(m["param"] != "sun.intensity_mult" for m in seen["moves"])
 
 
+def test_keep_best_restores_best_snapshot_at_end():
+    # scores improve then WORSEN without ever matching -> the loop must roll the scene back
+    # to the best-scoring round's snapshot, not leave it at the last (worse) state.
+    scores = iter([10.0, 4.0, 8.0])
+    snaps = iter(["A", "B", "C"])  # snapshot returns a distinct token per call
+    restored = []
+
+    res = run_autopilot(
+        rounds=3, render_cb=cap,
+        correct_cb=lambda c, n: (next(scores), corr([{"param": "cam.iso", "to": 200, "from": 300}])),
+        apply_cb=lambda m: {"applied": ["cam.iso"]},
+        snapshot_cb=lambda: next(snaps),
+        restore_cb=lambda snap: restored.append(snap),
+    )
+    assert res["stop_reason"] == "budget"
+    assert res["restored_to_best"] is True
+    assert restored == ["B"]  # snapshot of the best round (score 4.0), not "A"/"C"
+    assert res["best_match_percent"] == 96  # match_percent(4.0)
+
+
+def test_keep_best_no_restore_when_matched():
+    # a matched stop IS already the best state — nothing to roll back.
+    scores = iter([10.0, 2.0])  # round 2 matched (<=3)
+    restored = []
+
+    res = run_autopilot(
+        rounds=5, render_cb=cap,
+        correct_cb=lambda c, n: (next(scores), corr([{"param": "cam.iso", "to": 200, "from": 300}])),
+        apply_cb=lambda m: {"applied": ["cam.iso"]},
+        snapshot_cb=lambda: "s", restore_cb=lambda snap: restored.append(snap),
+    )
+    assert res["stop_reason"] == "matched"
+    assert res["restored_to_best"] is False
+    assert restored == []
+
+
+def test_keep_best_noop_without_seams():
+    # backward-compat: no snapshot/restore seams -> keep-best is inert, loop behaves as before.
+    res = run_autopilot(
+        rounds=2, render_cb=cap,
+        correct_cb=lambda c, n: (10.0 + n, corr([{"param": "cam.iso", "to": 200, "from": 300}])),
+        apply_cb=lambda m: {"applied": ["cam.iso"]},
+    )
+    assert res["restored_to_best"] is False
+
+
 def test_on_round_progress_exceptions_swallowed():
     def bad_progress(row):
         raise ValueError("ui gone")

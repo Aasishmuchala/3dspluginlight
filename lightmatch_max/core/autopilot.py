@@ -42,6 +42,8 @@ def run_autopilot(
     on_round: Optional[Callable[[dict], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     matched_fn: Optional[Callable[[float], bool]] = None,
+    snapshot_cb: Optional[Callable[[], Any]] = None,
+    restore_cb: Optional[Callable[[Any], Any]] = None,
 ) -> dict:
     """Loop up to `rounds` refine rounds.
 
@@ -51,6 +53,15 @@ def run_autopilot(
     on_round(row)          -> progress (exceptions swallowed)
     should_stop()          -> cooperative cancel, checked before each round
     matched_fn(score)      -> bool (default engine.matched)
+    snapshot_cb()          -> opaque token capturing the CURRENT lighting (optional)
+    restore_cb(token)      -> re-apply a snapshot token (optional)
+
+    KEEP-BEST: the model is a noisy actuator — a correction can make the score WORSE than
+    an earlier round (measured live: a run hit 97% then a later apply dropped it to 66%).
+    When snapshot/restore seams are supplied, the loop snapshots the best-scoring state as
+    it goes and, on ANY exit, leaves the scene at that best state instead of the last
+    (possibly worse) one — so the user's final render is the best result the loop found,
+    not wherever it happened to stop.
 
     stop_reason: matched | budget | no_moves | oscillating | cancelled | error:<Exc>.
     Never raises — a callable exception aborts with reason 'error:<ExcName>' and the
@@ -63,6 +74,21 @@ def run_autopilot(
     stop_reason = "budget"
     final_score: Optional[float] = None
     error_message: Optional[str] = None
+    best_score: Optional[float] = None
+    best_snap: Any = None
+
+    def consider_best(score: float) -> None:
+        """Snapshot the CURRENT scene when it is the best-scoring one so far. The score
+        measures the live scene entering this round, so the snapshot IS the state that
+        earned it."""
+        nonlocal best_score, best_snap
+        if best_score is None or score < best_score:
+            best_score = score
+            if snapshot_cb is not None:
+                try:
+                    best_snap = snapshot_cb()
+                except Exception:
+                    pass  # a failed snapshot just leaves the prior best in place
 
     def emit(row: dict) -> None:
         rows.append(row)
@@ -81,6 +107,7 @@ def run_autopilot(
             cap = render_cb()
             score, correction = correct_cb(cap, n)
             final_score = score
+            consider_best(score)  # remember the best state before this round mutates it
 
             if matched_fn(score):
                 emit({
@@ -127,6 +154,18 @@ def run_autopilot(
         stop_reason = f"error:{type(e).__name__}"
         error_message = str(e) or type(e).__name__
 
+    # KEEP-BEST: leave the scene at the best-scoring state, not the last one. Only acts when
+    # the loop actually ended somewhere worse than a best it captured (a 'matched' stop is
+    # already the best, so this is a no-op there).
+    restored_best = False
+    if (restore_cb is not None and best_snap is not None and best_score is not None
+            and final_score is not None and final_score > best_score + 1e-9):
+        try:
+            restore_cb(best_snap)
+            restored_best = True
+        except Exception:
+            pass  # couldn't restore — leave the scene as-is rather than crash the loop
+
     # best (max) match across rounds — NOT the last round's, which can be lower after an
     # oscillation/budget stop (the last score may be the worst one measured).
     round_pcts = [r["match_percent"] for r in rows if isinstance(r.get("match_percent"), int)]
@@ -137,6 +176,7 @@ def run_autopilot(
         "final_score": final_score,
         "final_match_percent": match_percent(final_score) if final_score is not None else None,
         "best_match_percent": best_match_percent,
+        "restored_to_best": restored_best,
         "matched": stop_reason == "matched",
         "stop_reason": stop_reason,
         "error_message": error_message,

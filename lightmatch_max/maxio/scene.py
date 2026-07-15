@@ -122,6 +122,12 @@ def _parse_color(raw):
     ~RGB(80,70,55)'). Longest name wins so 'warm amber' beats 'amber'/'warm'. None if
     nothing parseable is found (row then fails honestly, writes nothing)."""
     import re
+    # a live Max color object (from pull_settings snapshots) — round-trips keep-best restore
+    if hasattr(raw, "r") and hasattr(raw, "g") and hasattr(raw, "b"):
+        try:
+            return tuple(max(0, min(255, int(round(float(getattr(raw, c)))))) for c in ("r", "g", "b"))
+        except Exception:
+            return None
     if isinstance(raw, (list, tuple)) and len(raw) >= 3:
         try:
             return tuple(max(0, min(255, int(raw[i]))) for i in range(3))

@@ -1083,6 +1083,19 @@ class LightMatchDock(QtWidgets.QWidget):
                 lambda: maxscene.apply_values(scope.stamp_camera_node(moves, self._active_camera()))
             )
 
+        # KEEP-BEST seams: snapshot the current lighting, and restore a snapshot. Reuse the
+        # exact Save-look / Restore-look machinery so the loop can roll the scene back to the
+        # best-scoring round instead of leaving it wherever it stopped.
+        def snapshot_cb():
+            return self._run_on_main(self._snapshot_params)
+
+        def restore_cb(snap):
+            if not isinstance(snap, dict) or not snap:
+                return None
+            return self._run_on_main(
+                lambda: maxscene.apply_values(scope.snapshot_to_rows(snap, self._active_camera()))
+            )
+
         self._busy(True, f"Autopilot: up to {rounds} rounds…")
         self._update_buttons(busy=True)  # enables Stop (via _ap_running)
         self._spawn(
@@ -1090,6 +1103,7 @@ class LightMatchDock(QtWidgets.QWidget):
                 rounds=rounds, render_cb=render_cb, correct_cb=correct_cb, apply_cb=apply_cb,
                 on_round=lambda row: self.apRow.emit(row),
                 should_stop=lambda: self._ap_cancel,
+                snapshot_cb=snapshot_cb, restore_cb=restore_cb,
             ),
             self._autopilot_done,
         )
