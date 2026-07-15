@@ -300,6 +300,37 @@ def refresh_livelink() -> str:
         return "unavailable"
 
 
+def start_livelink() -> str:
+    """Start (or confirm) the Chaos Vantage live-link from inside LightMatch, so the artist
+    doesn't have to leave the dock. Uses Chaos' OWN entry point VRayVantage_liveLink — it does
+    the full, correct setup: backs up the current Distributed-Rendering state, points DR at
+    Vantage, launches Vantage, disables the render elements that break the link, and stops IPR
+    + RESTORES the DR state when the link is toggled off. We deliberately do NOT hand-roll a
+    low-level IPR start: that would flip Distributed Rendering on with no revert path and could
+    leave a scene mis-DR'd for its final render. The live-link is V-Ray GPU only, so we gate on
+    GPU up front rather than letting Chaos' script pop a blocking 'switch to GPU?' modal that
+    can silently reassign the renderer. Best-effort; never raises. Returns 'already_active' |
+    'started' | 'needs_gpu' | 'no_vray' | 'unavailable'."""
+    rt = _rt()
+    try:
+        if not is_vray():
+            return "no_vray"
+        if "gpu" not in renderer_name().lower():
+            return "needs_gpu"  # GPU-only; don't trip Chaos' renderer-switch modal on CPU
+        if livelink_active():
+            return "already_active"
+        official = getattr(rt, "VRayVantage_liveLink", None)
+        if official is None or str(official) == "undefined":
+            # Chaos' live-link script isn't loaded in this session; its proper start also
+            # backs up/restores DR, so we send the user to the V-Ray toolbar rather than
+            # half-configure the link here.
+            return "unavailable"
+        official()  # Chaos' complete, reversible start
+        return "started"
+    except Exception:
+        return "unavailable"
+
+
 def _discover_renderer_prop(rt, prop: str) -> Optional[str]:
     """GPU/CPU-aware property discovery (mirrors the web export/apply): enumerate the
     ACTUAL renderer's properties and match by shape — colorMapping_type on CPU, or

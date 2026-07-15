@@ -197,12 +197,17 @@ class LightMatchDock(QtWidgets.QWidget):
         self.restore_look_btn = QtWidgets.QPushButton("Restore look")
         self.restore_look_btn.setToolTip("Re-apply this camera's saved lighting to the scene — one undo step.")
         self.restore_look_btn.clicked.connect(self._restore_look)
+        self.vantage_btn = QtWidgets.QPushButton("⚡ Vantage link")
+        self.vantage_btn.setToolTip("Start the Chaos Vantage live-link (or refresh it if already running) so your "
+                                    "sun/light changes stream into Vantage live. Needs V-Ray GPU as the renderer.")
+        self.vantage_btn.clicked.connect(self._vantage_clicked)
         self.autolight_chk = QtWidgets.QCheckBox("Auto lighting on switch")
         self.autolight_chk.setToolTip("OFF by default. When ON, switching cameras SAVES the outgoing camera's "
                                       "lighting and RESTORES the incoming camera's saved look (undoable). This "
                                       "changes your scene on every switch — leave off if you don't want that.")
         light_row.addWidget(self.save_look_btn)
         light_row.addWidget(self.restore_look_btn)
+        light_row.addWidget(self.vantage_btn)
         light_row.addWidget(self.autolight_chk, 1)
         lay.addLayout(light_row)
 
@@ -312,7 +317,7 @@ class LightMatchDock(QtWidgets.QWidget):
 
         if not IN_MAX:
             for b in (self.grab_btn, self.render_btn, self.render_cam_btn, self.cam_refresh_btn,
-                      self.save_look_btn, self.restore_look_btn, self.autolight_chk,
+                      self.save_look_btn, self.restore_look_btn, self.vantage_btn, self.autolight_chk,
                       self.apply_btn, self.check_btn, self.autopilot_btn):
                 b.setEnabled(False)
             self.status.setText("Standalone preview (no pymxs) — Max-only actions disabled.")
@@ -357,6 +362,9 @@ class LightMatchDock(QtWidgets.QWidget):
         # Stage 3 lighting snapshots need Max; Restore additionally needs a saved look.
         self.save_look_btn.setEnabled(not busy and IN_MAX)
         self.autolight_chk.setEnabled(not busy and IN_MAX)
+        # Vantage live-link start/refresh needs Max + V-Ray; usable any time the scene is idle
+        # (no recipe required — it's a scene-sync action, not a match action).
+        self.vantage_btn.setEnabled(not busy and IN_MAX)
         self.restore_look_btn.setEnabled(not busy and IN_MAX and bool(self._cam().get("lighting_snapshot")))
         # Apply / Check / Autopilot need Max AND a recipe on the table — disabled on
         # first open so the artist is guided to Analyze first, not into a dead-end.
@@ -994,6 +1002,31 @@ class LightMatchDock(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _vantage_clicked(self):
+        """One click: START the Chaos Vantage live-link if it isn't running, or REFRESH it if
+        it is (so a lighting change that didn't auto-stream gets pushed). All pymxs → main
+        thread; best-effort, never throws out to the UI."""
+        try:
+            if self._run_on_main(maxscene.livelink_active):
+                res = self._run_on_main(maxscene.refresh_livelink)
+                self.status.setText({
+                    "refreshed": "↻ Refreshed the Chaos Vantage live-link — your latest changes are pushed to Vantage.",
+                    "not_active": "Chaos Vantage live-link isn't running — click again to start it.",
+                    "unavailable": "Couldn't refresh the live-link — restart it via the V-Ray toolbar ▸ Chaos Vantage.",
+                }.get(res, f"Vantage live-link: {res}"))
+                return
+            res = self._run_on_main(maxscene.start_livelink)
+        except Exception as e:
+            self.status.setText(f"Vantage live-link: {e}")
+            return
+        self.status.setText({
+            "already_active": "✓ Chaos Vantage live-link is already running — your changes are streaming.",
+            "started": "✓ Started the Chaos Vantage live-link — Vantage is launching; changes will stream live.",
+            "needs_gpu": "Switch the renderer to V-Ray GPU — the Chaos Vantage live-link is GPU-only.",
+            "no_vray": "Set the renderer to V-Ray GPU first — the Chaos Vantage live-link is a V-Ray feature.",
+            "unavailable": "Start the live-link from the V-Ray toolbar ▸ Chaos Vantage (not scriptable in this session).",
+        }.get(res, f"Vantage live-link: {res}"))
+
     def _apply(self):
         values = self._checked_values()
         if not values:
@@ -1175,6 +1208,14 @@ class LightMatchDock(QtWidgets.QWidget):
                 (f"{best}% — LIGHTING MATCHED" if matched else f"{best}% best match") + f" · {msg}"
             )
             self.score_label.setStyleSheet("color:#2e8f5b;" if matched else f"color:{AMBER};")
+        # Push the FINAL (best-scoring) scene to Vantage: the keep-best restore + each round's
+        # apply wrote nodes directly, bypassing the per-apply nudge, so refresh the live-link
+        # once here (best-effort) if it's running — so Vantage ends on the matched look.
+        if len(result.get("rounds", [])):
+            try:
+                self._run_on_main(maxscene.refresh_livelink)
+            except Exception:
+                pass
 
     def _check_done(self, result):
         score, correction = result

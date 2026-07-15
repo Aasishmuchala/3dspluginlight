@@ -311,6 +311,56 @@ def test_livelink_helpers_detect_and_refresh(monkeypatch):
     assert scene.refresh_livelink() == "unavailable"
 
 
+def test_start_livelink_is_gpu_gated_and_uses_chaos_official_entry(monkeypatch):
+    # start_livelink() must: guard non-V-Ray; require V-Ray GPU (the link is GPU-only, and
+    # calling Chaos' entry on CPU pops a blocking renderer-switch modal); no-op when already
+    # live; use Chaos' own VRayVantage_liveLink (its full, REVERSIBLE start); and degrade to
+    # 'unavailable' — NEVER hand-rolling a DR flip — when that entry isn't loaded. (2026-07-16)
+    import sys
+    import types
+
+    from lightmatch_max.maxio import scene
+
+    def inject(rt):
+        fake = types.ModuleType("pymxs"); fake.runtime = rt
+        monkeypatch.setitem(sys.modules, "pymxs", fake)
+
+    inject(types.SimpleNamespace())
+    monkeypatch.setattr(scene, "is_vray", lambda: False)
+    assert scene.start_livelink() == "no_vray"
+
+    # V-Ray but CPU -> needs_gpu, and it must NOT call into Chaos (no modal, no renderer swap)
+    monkeypatch.setattr(scene, "is_vray", lambda: True)
+    monkeypatch.setattr(scene, "renderer_name", lambda: "V_Ray_6")
+    assert scene.start_livelink() == "needs_gpu"
+
+    # GPU renderer from here on
+    monkeypatch.setattr(scene, "renderer_name", lambda: "V_Ray_GPU_7")
+    monkeypatch.setattr(scene, "livelink_active", lambda: True)
+    assert scene.start_livelink() == "already_active"
+    monkeypatch.setattr(scene, "livelink_active", lambda: False)
+
+    # Chaos' official entry present -> use it (its complete, reversible start)
+    class _RTOfficial:
+        def __init__(self):
+            self.called = False
+
+        def VRayVantage_liveLink(self):
+            self.called = True
+
+    rt_off = _RTOfficial(); inject(rt_off)
+    assert scene.start_livelink() == "started"
+    assert rt_off.called
+
+    # entry absent -> 'unavailable' (must NOT touch distributed_rendering / half-configure)
+    rt_no_entry = types.SimpleNamespace(
+        renderers=types.SimpleNamespace(current=types.SimpleNamespace(distributed_rendering=False))
+    )
+    inject(rt_no_entry)
+    assert scene.start_livelink() == "unavailable"
+    assert rt_no_entry.renderers.current.distributed_rendering is False  # left untouched
+
+
 def test_parse_color_accepts_normalised_0_to_1_floats():
     # The model (and 3D tools) routinely emit colours as 0..1 floats. A normalised float
     # triple must be SCALED by 255, not truncated to black — the old list/tuple branch did
