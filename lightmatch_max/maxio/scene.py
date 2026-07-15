@@ -307,6 +307,18 @@ def pull_settings(camera_name: Optional[str] = None) -> dict[str, Any]:
         except Exception:
             missing.append(param)
             continue
+        # A light's colour has TWO forms — RGB `color` (color_mode 0) and `color_temperature`
+        # (color_mode 1) — but only the one matching the light's ACTIVE color_mode is real.
+        # Capture just that one, so Save-look / keep-best restore re-applies the active form
+        # (and its color_mode_set) instead of flipping a Kelvin light into RGB mode.
+        csm = m.get("color_mode_set")
+        if csm is not None:
+            try:
+                if int(getattr(node, "color_mode")) != int(csm):
+                    missing.append(param)
+                    continue
+            except Exception:
+                pass
         if m["type"] == "enum":
             try:
                 label = CM_TYPE_BY_INDEX.get(int(raw))
