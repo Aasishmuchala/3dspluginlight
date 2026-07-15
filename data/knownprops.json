@@ -16,6 +16,8 @@
   "sun.affect_specular": { "node": "sun", "prop": "affect_specular", "type": "bool", "domain": "scene" },
   "sun.affect_atmos": { "node": "sun", "prop": "affect_atmospherics", "type": "bool", "domain": "scene" },
   "sun.cast_atmos_shadows": { "node": "sun", "prop": "cast_atmospheric_shadows", "type": "bool", "domain": "scene" },
+  "sun.placement_elevation": { "node": "sun", "type": "sun_angle", "angle": "elevation", "domain": "scene" },
+  "sun.placement_azimuth": { "node": "sun", "type": "sun_angle", "angle": "azimuth", "domain": "scene" },
   "light.on": { "node": "light", "prop": "on", "type": "bool", "domain": "scene" },
   "light.multiplier": { "node": "light", "prop": "multiplier", "type": "float", "domain": "scene" },
   "light.invisible": { "node": "light", "prop": "invisible", "type": "bool", "domain": "scene" },

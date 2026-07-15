@@ -103,6 +103,83 @@ def _node_for(rt, node: str, create: bool = False):
     return None
 
 
+# -- sun ANGLE (elevation/azimuth) — a coupled TRANSFORM, not a property --------------
+# A VRaySun's illumination direction is its geometry (position relative to its target),
+# so elevation+azimuth can't be a per-row setattr like the other known_props. We treat
+# them as one coupled move: place the sun on the sky sphere around its target. Convention:
+# elevation = degrees above the horizon (0=horizon, 90=zenith); azimuth = compass degrees,
+# 0 = +Y (North), increasing clockwise toward +X (East). All vector math is done in
+# explicit components so it never depends on pymxs Point3 operator overloading.
+def _proper_node(rt, class_name, name=None):
+    """A node of a class as a PROPER node wrapper (with a working .position / .target /
+    .name), optionally matched by exact name. getClassInstances() hands back opaque base
+    wrappers whose node TRANSFORM is inaccessible (fine for object props like .multiplier,
+    useless for the sun's angle), so iterate rt.objects for the sun-angle path instead."""
+    for o in rt.objects:
+        try:
+            if str(rt.classOf(o)) == class_name and (name is None or str(o.name) == name):
+                return o
+        except Exception:
+            continue
+    return None
+
+
+def _get_pos(rt, node):
+    """Node world position as (x,y,z) — attribute access, which works on the rt.objects /
+    getNodeByName node wrappers used for the sun-angle path."""
+    p = node.position
+    return float(p.x), float(p.y), float(p.z)
+
+
+def _set_pos(rt, node, x, y, z):
+    node.position = rt.Point3(x, y, z)
+
+
+def _sun_target_point(rt, sun):
+    """(Tx,Ty,Tz) the sun aims at — its Target if it has one, else world origin."""
+    try:
+        tgt = sun.target
+        if tgt is not None:
+            return _get_pos(rt, tgt)
+    except Exception:
+        pass
+    return 0.0, 0.0, 0.0
+
+
+def _sun_dir_and_dist(rt, sun):
+    """Unit direction from the target TO the sun (where it sits in the sky) + the distance.
+    Falls back to a default distance if the sun sits on its target."""
+    tx, ty, tz = _sun_target_point(rt, sun)
+    px, py, pz = _get_pos(rt, sun)
+    vx, vy, vz = px - tx, py - ty, pz - tz
+    d = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if d < 1e-6:
+        return (0.0, 0.0, 1.0), 100000.0
+    return (vx / d, vy / d, vz / d), d
+
+
+def _sun_current_angles(rt, sun):
+    """(elevation_deg, azimuth_deg) of the sun's CURRENT geometry."""
+    (nx, ny, nz), _ = _sun_dir_and_dist(rt, sun)
+    el = math.degrees(math.asin(max(-1.0, min(1.0, nz))))
+    az = math.degrees(math.atan2(nx, ny)) % 360.0
+    return el, az
+
+
+def _set_sun_angles(rt, sun, elevation_deg, azimuth_deg):
+    """Position the sun on the sky sphere for the given elevation/azimuth, preserving its
+    distance to the target. For a targeted VRaySun (the standard archviz rig) the target
+    constraint re-aims it automatically, which is exactly the illumination direction."""
+    tx, ty, tz = _sun_target_point(rt, sun)
+    _, d = _sun_dir_and_dist(rt, sun)
+    er = math.radians(elevation_deg)
+    ar = math.radians(azimuth_deg)
+    dx = math.cos(er) * math.sin(ar)
+    dy = math.cos(er) * math.cos(ar)
+    dz = math.sin(er)
+    _set_pos(rt, sun, tx + dx * d, ty + dy * d, tz + dz * d)
+
+
 def renderer_name() -> str:
     rt = _rt()
     try:
@@ -231,6 +308,52 @@ def apply_values(values: list[dict]) -> dict[str, list[str]]:
     import pymxs  # type: ignore
 
     with pymxs.undo(True, "LightMatch apply"):
+        # -- coupled sun-ANGLE pre-pass: placement_elevation + placement_azimuth define ONE
+        # transform, so they can't go through the per-row setattr loop. Resolve the sun
+        # once, apply the combined angle, and verify by reading the ACHIEVED angle back.
+        angle_rows = [v for v in values if isinstance(v.get("param"), str)
+                      and props.get(v["param"], {}).get("type") == "sun_angle"]
+        if angle_rows:
+            aname = next((v.get("node") for v in angle_rows
+                          if isinstance(v.get("node"), str) and v.get("node")), None)
+            # sun-angle needs a PROPER node wrapper (transform access), so resolve via
+            # rt.objects, honoring an explicit node name for a specific sun.
+            sun = _proper_node(rt, "VRaySun", aname)
+            if sun is None:
+                for v in angle_rows:
+                    failed.append(str(v.get("param")))
+            else:
+                tgt_el, tgt_az = _sun_current_angles(rt, sun)
+                usable = []
+                for v in angle_rows:
+                    try:
+                        val = float(v.get("set"))
+                        if not math.isfinite(val):
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        failed.append(str(v.get("param"))); continue
+                    if props[v["param"]]["angle"] == "elevation":
+                        tgt_el = val
+                    else:
+                        tgt_az = val
+                    usable.append(v)
+                if usable:
+                    try:
+                        _set_sun_angles(rt, sun, tgt_el, tgt_az)
+                        ach_el, ach_az = _sun_current_angles(rt, sun)
+                        for v in usable:
+                            which = props[v["param"]]["angle"]
+                            want, got = (tgt_el, ach_el) if which == "elevation" else (tgt_az, ach_az)
+                            diff = abs(want - got)
+                            if which == "azimuth":
+                                diff = min(diff, 360.0 - diff)
+                            applied.append(v["param"])
+                            (verified if diff < 0.5 else unverified).append(v["param"])
+                    except Exception:
+                        for v in usable:
+                            failed.append(str(v.get("param")))
+            values = [v for v in values if v not in angle_rows]
+
         for v in values:
             param = v.get("param")
             m = props.get(param) if isinstance(param, str) else None
