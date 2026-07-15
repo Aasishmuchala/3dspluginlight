@@ -169,8 +169,8 @@ class LightMatchDock(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("LightMatch")
-        self.setMinimumWidth(380)
+        self.setWindowTitle("Light")
+        self.setMinimumWidth(420)
         self.session = sess.new_session(TARGET)
         # base_capture is a PROPERTY over the active camera's slot (Stage 2) — the render
         # you provide is remembered per camera, not on the widget.
@@ -235,8 +235,29 @@ class LightMatchDock(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.setStyleSheet(GLASS_QSS)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(18, 18, 18, 18)
-        lay.setSpacing(11)
+        lay.setContentsMargins(22, 20, 22, 22)
+        lay.setSpacing(14)
+
+        # -- wordmark header: a big, quiet "Light" + one-line what-it-does, then a hairline.
+        head = QtWidgets.QVBoxLayout()
+        head.setSpacing(2)
+        self.wordmark = QtWidgets.QLabel("Light")
+        wf = self.wordmark.font()
+        wf.setPointSize(20)
+        wf.setBold(True)
+        self.wordmark.setFont(wf)
+        self.wordmark.setStyleSheet("color:#ECEAE3; background:transparent;")
+        self.tagline = QtWidgets.QLabel("Match your V-Ray render's lighting to a reference image.")
+        self.tagline.setWordWrap(True)
+        self.tagline.setStyleSheet("color:#8A857A; background:transparent; font-size:12px;")
+        head.addWidget(self.wordmark)
+        head.addWidget(self.tagline)
+        lay.addLayout(head)
+        rule = QtWidgets.QFrame()
+        rule.setFixedHeight(1)
+        rule.setStyleSheet("background:rgba(255,255,255,0.09); border:0;")
+        lay.addWidget(rule)
+        lay.addSpacing(2)
 
         # key + model row
         row = QtWidgets.QHBoxLayout()
